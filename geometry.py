@@ -1,17 +1,6 @@
 import torch
+import numpy as np
 def camera_to_world(p, d, K, R, C, origin, scaling):
-	'''
-		Inputs
-		-------------------------
-		p: 2D points sampled from image plane (B,n_points, 2)
-		d: depth (B, n_points, 1)
-		K: camerea intrinsics (B, 1, 3, 3)
-		R: camera rotation matrix (B,1,3,3)
-		C: camera center of origin (B,1,3,1)
-		origin: origin for rescaling purposes (B,1,1,2)
-		scaling: scaling for rescaling purposes (B,1,1,1)
-
-	'''
 
 	#Make homogenous
 	u=scaling.squeeze(1)*p+origin.squeeze(1)
@@ -37,4 +26,66 @@ def world_to_camera(p_world,K,R,C,origin,scaling):
 	u[...,:2]-=((1/scaling.squeeze(1))*origin.squeeze(1))
 
 	return u.permute(0,2,1)
-	print(u.shape)
+
+
+def depth_to_3D(depth, K, R, C, scale_factor,origin,scale_est=1):
+	"""
+		Project our depth images to a set of 3D points
+
+		Parameters
+		----------
+		depth - depth image: torch Tensor of shape (B,1,H,W)
+		K - intrinsic parameters: torch Tensor of shape (B,1,3,3)
+		R - rotation matrix: torch Tensor of shape (B,1,3,3)
+		C - camera center: torch Tensor of shape (B,1,3,1)
+		scale_factor -resizing scaling factor: float
+
+		Returns
+		-------
+		output - set of 3D points: torch Tensor of shape (B,3,256,256)
+		valid_mask - mask of valid depth points: torch Tensor of shape (B,1,H,W) 
+	"""
+	#Valid depth estimations are greater than or equal to 0
+	valid_mask=torch.where(depth>0,torch.ones_like(depth),torch.zeros_like(depth)) # (B,1,H,W)
+
+	#Calculate the 3D points
+	h=depth.shape[2]
+	w=depth.shape[3]
+	batch_size=depth.shape[0]
+
+	image_range=(-1,1)
+
+	n_points=h*w
+	pixel_locations = torch.meshgrid(torch.arange(0, w), torch.arange(0, h))
+
+	u = torch.stack([pixel_locations[1], pixel_locations[0]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1) # (B,N,2)
+	u[...,0]=2*u[...,0]/(w-1)-1
+	u[...,1]=2*u[...,1]/(h-1)-1
+	u = u.permute(0,2,1).cuda() # (B,2,N)
+
+	#Get the indices
+	#vv,uu=torch.meshgrid(torch.arange(depth.shape[2]), torch.arange(depth.shape[3]))
+	#vv=vv.flatten()
+	#uu=uu.flatten()
+
+	#Build coordinate matrices
+	#u=torch.cat((uu[np.newaxis,:], vv[np.newaxis,:]),axis=0).cuda(non_blocking=True)
+
+	#u=scale_factor*u
+	#u=torch.cat((u,torch.ones((1,len(uu))).cuda(non_blocking=True)),axis=0) #(3,N)
+
+	#Tile to number of batches
+	#u=torch.repeat_interleave(u[np.newaxis,...], depth.shape[0],dim=0) #(B,2,N)
+	u=scale_factor[:,0,...]*u+torch.transpose(origin[:,0,...],1,2)
+	u=torch.cat((u,torch.ones((depth.shape[0],1,u.shape[-1])).cuda(non_blocking=True)),axis=1) #(B,3,N)
+
+	#Move to 3D by multiplying by inverse camera intrinsics
+	X=torch.transpose(R, 2,3)@torch.inverse(K)@(u[:,np.newaxis,...])
+	#Reshape
+	X=X.view((X.shape[0],X.shape[2],X.shape[3])) # (B,3,N)
+	C=C.view((C.shape[0],C.shape[2],C.shape[3])) # (B,3,1)
+	X=X.view((X.shape[0],X.shape[1],depth.shape[2],depth.shape[3])) # (B,3,H,W)
+	#Multiply  by the depth and add the camera center
+	output=scale_est*depth*X + C[...,np.newaxis]# (B,3,H,W)
+
+	return output, valid_mask

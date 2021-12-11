@@ -133,7 +133,7 @@ def freespace_loss(logits_pred, weights=None, reduction_method='sum'):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering		
 	return cross_entropy_occupancy_loss(logits_pred, is_occupied=False, weights=weights,reduction_method=reduction_method)
 
-def cross_entropy_occupancy_loss(logits_pred, is_occupied=True, weights=None, reduction_method='None')
+def cross_entropy_occupancy_loss(logits_pred, is_occupied=True, weights=None, reduction_method='None'):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 
 	if is_occupied:
@@ -149,7 +149,7 @@ def cross_entropy_occupancy_loss(logits_pred, is_occupied=True, weights=None, re
 
 	return apply_reduction(loss_out, reduction_method)
 
-def calculate_occupancy_loss(lambda_occupancy,logits_hat, mask_occupancy, reduction_method):
+def calculate_occupancy_loss(lambda_occupancy,logits_hat, mask_occupancy, reduction_method,loss):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering	
 	batch_size=logits_hat.shape[0]
 

@@ -8,7 +8,8 @@ import torch
 from matplotlib.patches import Circle
 import time
 from sklearn.neighbors import NearestNeighbors
-from geometry import camera_to_world
+from geometry import camera_to_world, world_to_camera
+from view_3D import visualize_3D
 
 
 # **********************************************************************************************
@@ -65,7 +66,7 @@ def sample(im,batch_size):
 
 	n_points=h*w
 	pixel_locations = torch.meshgrid(torch.arange(0, w), torch.arange(0, h))
-	pixel_locations = torch.stack([pixel_locations[0], pixel_locations[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
+	pixel_locations = torch.stack([pixel_locations[1], pixel_locations[0]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
 	pixel_scaled = pixel_locations.clone().float()
 
 	pixel_scaled[...,0] = 2*pixel_scaled[...,0]/(w-1)-1
@@ -131,17 +132,46 @@ def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0,2.4]):
 
 	return p_freespace
 
-def get_occupancy_points(p, p_unscaled,K, R, C, origin, scaling, depth_input, depth_range=[0,2.4]):
+def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, use_cube_intersection=True, occupancy_random_normal=False, depth_range=[0,2.4]):
 	#modified from from https://github.com/autonomousvision/differentiable_volumetric_rendering
-	d_occupancy = torch.rand(p.shape[0], p.shape[1]).cuda(non_blocking=True)*depth_range[1]
-	d_occupancy=d_occupancy.unsqueeze(-1)
+	device = pixels.device
+	batch_size,n_points,_=pixels.shape
 
-	if depth_input is not None:
-		d_occupancy = depth_input[torch.arange(depth_input.shape[0]).unsqueeze(-1),:,p_unscaled[...,1].long(),p_unscaled[...,0].long()] 
+	if use_cube_intersection:
+		_,d_cube_intersection, mask_cube = intersect_camera_rays_with_unit_cube(pixels, K, R, C, origin, scaling, padding=0.,use_ray_length_as_depth=False)
+		d_cube=d_cube_intersection[mask_cube]
 
-	p_occupancy = camera_to_world(p, d_occupancy, K, R, C, origin, scaling)
+	d_occupancy = torch.rand(pixels.shape[0], pixels.shape[1]).cuda(non_blocking=True)*depth_range[1]
+	if use_cube_intersection:
+		d_occupancy[mask_cube] = d_cube[:,0] + torch.rand(d_cube.shape[0]).to(device)*(d_cube[:,1]-d_cube[:,0])
+	if occupancy_random_normal:
+		d_occupancy = torch.rand(batch_size,n_points).to(device) * (depth_range[1]/8) + depth_range[1] /2
+		if use_cube_intersection:
+			mean_cube = d_cube.sum(-1) /2
+			std_cube = (d_cube[:,1] - d_cube[:,0]) /8
+			d_occupancy[mask_cube] = mean_cube + torch.randn(mean_cube.shape[0]).to(device)*std_cube
+
+	if depth_img is not None:
+		depth_gt, mask_gt_depth = get_tensor_values(depth_img, pixels, squeeze_channel_dim=True, with_mask=True)
+		d_occupancy[mask_gt_depth] = depth_gt[mask_gt_depth]
+
+	p_occupancy = camera_to_world(pixels, d_occupancy.unsqueeze(-1), K, R, C, origin, scaling)
 
 	return p_occupancy
+
+def intersect_camera_rays_with_unit_cube(pixels, K, R, C, origin, scaling, padding=0.1, eps=1e-6,use_ray_length_as_depth=True):
+	batch_size, n_points, _ = pixels.shape
+
+	pixel_world = image_points_to_world(pixels, K, R, C, origin, scaling)
+
+	ray_vector = (pixel_world-C.squeeze(-1))
+
+	p_cube, d_cube, mask_cube = check_ray_intersection_with_unit_cube(C.squeeze(-1).repeat(1,n_points,1), ray_vector, padding=padding, eps=eps)
+	if not use_ray_length_as_depth:
+		p_cam = world_to_camera(p_cube.view(batch_size,-1,3),K,R,C,origin,scaling).view(batch_size,n_points, -1,3)
+		d_cube = p_cam[...,-1]
+
+	return p_cube, d_cube, mask_cube
 
 
 def points_to_world(p, K, R, C, origin, scaling):
@@ -149,6 +179,15 @@ def points_to_world(p, K, R, C, origin, scaling):
 	d=torch.ones((p.shape[0],p.shape[1],1)).cuda(non_blocking=True)
 
 	return camera_to_world(p,d,K,R,C,origin,scaling)
+
+def image_points_to_world(p, K, R, C, origin,scaling):
+	batch_size, n_points, dim = p.shape
+	assert(dim==2)
+	device = p.device
+
+	d_image = torch.ones(batch_size,n_points,1).to(device)
+
+	return camera_to_world(p, d_image, K, R, C, origin, scaling)
 
 
 def get_logits_from_prob(probs, eps=1e-4):
@@ -172,7 +211,8 @@ def get_proposal_points_in_unit_cube(origin, ray_direction, padding=0.1, eps=1e-
 
 
 def check_ray_intersection_with_unit_cube(origin, ray_direction, padding=0.1, eps=1e-6):
-	batch_size,n_points,_=origin.shape
+	batch_size,n_points,_=ray_direction.shape
+
 	device = origin.device
 
 	#Calculate the intersections with the unit cube where <.,.> is the dot product
