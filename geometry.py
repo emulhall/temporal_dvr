@@ -22,3 +22,19 @@ def camera_to_world(p, d, K, R, C, origin, scaling):
 	X=torch.transpose(d, 1,2)*X + C.squeeze(1)
 
 	return X.permute(0,2,1)
+
+def world_to_camera(p_world,K,R,C,origin,scaling):
+	batch_size,n_points,_=p_world.shape
+	device=p_world.device
+
+	#Transform world points to homogeneous coordinates
+	p_world = torch.cat((p_world, torch.ones(batch_size,n_points,1).to(device)),dim=-1).permute(0,2,1)
+
+	P=R@torch.cat((torch.eye(3).repeat(batch_size,1,1,1).to(device),-C),axis=3)
+
+	u=K.squeeze(1)@P.squeeze(1)@p_world # (B,3,n_points)
+	u=(1/scaling.squeeze(1))*u
+	u[...,:2]-=((1/scaling.squeeze(1))*origin.squeeze(1))
+
+	return u.permute(0,2,1)
+	print(u.shape)

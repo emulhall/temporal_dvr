@@ -73,17 +73,26 @@ def sample(im,batch_size):
 
 	return pixel_locations, pixel_scaled
 
+def rescale_origin(origin,w,h):
+	origin_rescaled=torch.zeros_like(origin)
+	origin_rescaled[...,0] = 2*origin[...,0]/(w-1)-1
+	origin_rescaled[...,1] = 2*origin[...,1]/(h-1)-1
 
-def patch_sample(im, batch_size, n_points, patch_size=1):
+	return origin
+
+
+def patch_sample(im, batch_size, n_points, patch_size=1,continuous=True):
 	#Slightly modified patch_sample from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	h_step=1/im.shape[2]
 	w_step=1/im.shape[3]
 
 	n_patches = int(n_points/patch_size**2)
-
-	p_x = torch.randint(0, im.shape[3], size=(batch_size, n_patches,1)).float() /(im.shape[3]-1)
-	p_y=torch.randint(0, im.shape[2], size=(batch_size, n_patches,1)).float() /(im.shape[2]-1)
-	p = torch.cat((p_x, p_y),dim=-1)
+	if continuous:
+		p = torch.rand(batch_size, n_patches,2)
+	else:
+		p_x = torch.randint(0, im.shape[3], size=(batch_size, n_patches,1)).float() /(im.shape[3]-1)
+		p_y=torch.randint(0, im.shape[2], size=(batch_size, n_patches,1)).float() /(im.shape[2]-1)
+		p = torch.cat((p_x, p_y),dim=-1)
 
 	p[...,0] *= 1-(patch_size-1)*w_step
 	p[...,1] *= 1-(patch_size-1)*h_step
@@ -242,3 +251,38 @@ def get_mask(tensor):
 	if is_numpy:
 		mask = mask.numpy()
 	return mask
+
+def get_tensor_values(tensor,p,grid_sample=True,mode='nearest',with_mask=False, squeeze_channel_dim=False):
+	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
+	p=to_pytorch(p)
+	tensor, is_numpy = to_pytorch(tensor,True)
+	batch_size,_,h,w=tensor.shape
+
+	if grid_sample:
+		p=p.unsqueeze(1)
+		values = torch.nn.functional.grid_sample(tensor.float(),p.float(),mode=mode)
+		values = values.squeeze(2)
+		values = values.permute(0,2,1)
+	else:
+		p[...,0]=(p[...,0]+1)*w/2
+		p[...,1]=(p[...,1]+1)*w/2
+		p=p.long()
+		values=tensor[torch.arange(batch_size).unsqueeze(-1),:,p[...,1],p[...,0]]
+
+	if with_mask:
+		mask = get_mask(values)
+		if squeeze_channel_dim:
+			mask = mask.squeeze(-1)
+		if is_numpy:
+			mask = mask.numpy()
+
+	if squeeze_channel_dim:
+		values = values.squeeze(-1)
+
+	if is_numpy:
+		values=values.numpy()
+
+	if with_mask:
+		return values, mask	
+
+	return values

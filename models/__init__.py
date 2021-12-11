@@ -24,7 +24,8 @@ class DVR(nn.Module):
 	def forward(self, p, p_occupancy, p_freespace, inputs, K, R, C, origin, scale, it=None, sparse_depth=None,calc_normals=False, **kwargs):
 
 		#Encode inputs
-		c=self.encode_inputs(inputs)
+		c=self.encode_inputs(inputs) #(1,0)
+		c=None
 
 		p_world, mask_pred, mask_zero_occupied = self.pixels_to_world(p, K, R, C, origin, scale, c,it)
 

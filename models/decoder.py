@@ -32,14 +32,14 @@ class Decoder(nn.Module):
 		assert(len(p.shape)==3 or len(p.shape)==2)
 
 		net = self.fc_p(p.float())
-		'''for n in range(self.n_blocks):
+		for n in range(self.n_blocks):
 			if self.c_dim != 0 and c is not None:
 				net_c = self.fc_c[n](c)
 				if batchwise:
 					net_c = net_c.unsqueeze(1)
 				net = net + net_c
 
-			net = self.blocks[n](net)'''
+			net = self.blocks[n](net)
 
 		out = self.fc_out(self.actvn(net))
 		if only_occupancy:
