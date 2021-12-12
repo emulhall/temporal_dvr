@@ -5,6 +5,7 @@ from torch import distributions as dist
 
 from models import depth_function, decoder
 from utils import points_to_world, normalize_tensor, get_mask
+from view_3D import visualize_3D
 
 class DVR(nn.Module):
 	def __init__(self, decoder, encoder=None, device=None,depth_function_kwargs={}):
@@ -24,8 +25,7 @@ class DVR(nn.Module):
 	def forward(self, p, p_occupancy, p_freespace, inputs, K, R, C, origin, scale, it=None, sparse_depth=None,calc_normals=False, **kwargs):
 
 		#Encode inputs
-		c=self.encode_inputs(inputs) #(1,0)
-		c=None
+		c=self.encode_inputs(inputs) #(1,c_dim)
 
 		p_world, mask_pred, mask_zero_occupied = self.pixels_to_world(p, K, R, C, origin, scale, c,it)
 
@@ -128,7 +128,7 @@ class DVR(nn.Module):
 		d_i = self.call_depth_function(origin, ray_direction, self.decoder, c=c, it=it, n_steps=sampling_accuracy)
 
 		#Get mask for where first evaluation point is occupied
-		mask_zero_occupied = d_i==0
+		mask_zero_occupied = d_i ==0
 
 		#Get mask for predicted depth
 		mask_pred = get_mask(d_i).detach()

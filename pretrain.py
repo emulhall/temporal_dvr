@@ -12,17 +12,17 @@ from config import get_model
 from utils import sample, patch_sample, get_freespace_points, get_occupancy_points, get_tensor_values, rescale_origin
 from loss import calculate_photoconsistency_loss, calculate_depth_loss, calculate_normal_loss, calculate_freespace_loss, calculate_occupancy_loss
 from geometry import depth_to_3D
-from view_3D import visualize_3D_masked, visualize_3D
+from view_3D import visualize_3D_masked, visualize_3D, visualize_prediction
+from render import render_img
 
 def ParseCmdLineArguments():
 	parser=argparse.ArgumentParser(description='Occupancy Function Training')
 	parser.add_argument('--input', type=str, default='./data/RenderPeople.pkl')
 	parser.add_argument('--output', type=str, default='./results')
 	parser.add_argument('--batch_size', type=int, default=1)
-	parser.add_argument('--learning_rate', type=float, default=1.e-3)
-	parser.add_argument('--epochs', type=int, default=1)
-	parser.add_argument('--num_sample_points',type=int, default=100)
-	parser.add_argument('--sample_batch_size',type=int, default=100)
+	parser.add_argument('--learning_rate', type=float, default=1.e-4)
+	parser.add_argument('--epochs', type=int, default=100)
+	parser.add_argument('--num_sample_points',type=int, default=1000)
 
 	return parser.parse_args()
 
@@ -59,16 +59,19 @@ if __name__ == '__main__':
 	if not (os.path.isdir(os.path.join(args.output,'pretrain','meshes'))):
 		os.mkdir(os.path.join(args.output,'pretrain','meshes'))
 
+	if not (os.path.isdir(os.path.join(args.output,'pretrain','render'))):
+		os.mkdir(os.path.join(args.output,'pretrain','render'))	
+
 	is_cuda = (torch.cuda.is_available())
 	device = torch.device("cuda" if is_cuda else "cpu")
 
 	#Set lambda values
 	lambda_rgb=1
 	lambda_image_gradients=0
-	lambda_depth=0
+	lambda_depth=1
 	lambda_normal=0
-	lambda_freespace=0
-	lambda_occupancy=0
+	lambda_freespace=1
+	lambda_occupancy=1
 
 	#Set hyperparameters
 	patch_size=1
@@ -92,7 +95,7 @@ if __name__ == '__main__':
 			K = train_data['K'].cuda(non_blocking=True) 
 			R = train_data['R'].cuda(non_blocking=True) 
 			C = train_data['C'].cuda(non_blocking=True) 
-			gt_depth = train_data['gt_depth'].cuda(non_blocking=True) 
+			gt_depth = train_data['gt_depth'].cuda(non_blocking=True)
 			gt_norm = train_data['gt_norm'].cuda(non_blocking=True) 
 			origin = train_data['origin'].cuda(non_blocking=True)
 			scaling = train_data['scaling'].cuda(non_blocking=True)
@@ -101,7 +104,6 @@ if __name__ == '__main__':
 			loss={'loss':0, 'loss_rgb':0, 'loss_image_gradient':0, 'loss_rgb_eval': 0, 'loss_depth':0, 'loss_depth_eval':0, 'loss_normal':0, 'loss_normal_eval':0, 'loss_freespace':0, 'loss_occupancy':0}
 
 			#Sample pixels
-			#TODO maybe play around with more random sampling?
 			p = None
 			if args.num_sample_points >=color.shape[2]*color.shape[3]:
 				p_unscaled, p = sample(color,color.shape[0])
@@ -111,21 +113,20 @@ if __name__ == '__main__':
 			p=p.cuda(non_blocking=True)
 			p_unscaled=p_unscaled.cuda(non_blocking=True)
 
-			#origin=rescale_origin(origin,color.shape[3],color.shape[2])
-
 			#Get the ground truth mask for the sampled points
 			gt_mask = get_tensor_values(mask,p)
 			gt_mask = gt_mask[...,0].bool()
 
 			#Get the 3D points for evaluating occupancy and freespace losses as mentioned in DVR paper
-			p_freespace = get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0,2.4]) #(B,n_points,3)
+			p_freespace = get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0,4.]) #(B,n_points,3)
 			p_occupancy = get_occupancy_points(p, K, R, C, origin, scaling, depth_img=gt_depth) #(B,n_points,3)
 
-			visualize_3D(p_occupancy.squeeze(0).cpu().numpy(),fname='occupancy.ply')
-			visualize_3D(p_freespace.squeeze(0).cpu().numpy(),fname='freespace.ply')
+			#visualize_3D(p_occupancy.squeeze(0).cpu().numpy(),fname='occupancy.ply')
+			#visualize_3D(p_freespace.squeeze(0).cpu().numpy(),fname='freespace.ply')
 
 			#Forward pass
 			p_world_hat, rgb_pred, logits_occupancy, logits_freespace, mask_pred, p_world_hat_sparse, mask_pred_sparse, normals=net(p, p_occupancy,p_freespace,color,K,R,C,origin,scaling)
+			#visualize_3D(p_world_hat.detach().squeeze(0).cpu().numpy(),fname='p_world_hat%03d.ply'%(epoch))
 
 			#Calculate loss
 			#Photoconsistency loss
@@ -196,8 +197,11 @@ if __name__ == '__main__':
 
 
 					#Save a ground truth point cloud for reference
-					X,_ = depth_to_3D(gt_depth, K, R, C, scaling, origin, 1)
-					visualize_3D_masked(X[0].cpu().numpy(), mask[0,0].cpu().numpy(),fname=os.path.join(args.output, 'pretrain', 'meshes','gt_rescaled_epoch_%04d_iter_%04d.ply'%(epoch, train_idx)))
+					#X,_ = depth_to_3D(gt_depth, K, R, C, scaling, origin, 1)
+					#visualize_3D_masked(X[0].cpu().numpy(), mask[0,0].cpu().numpy(),fname=os.path.join(args.output, 'pretrain', 'meshes','gt_rescaled_epoch_%04d_iter_%04d.ply'%(epoch, train_idx)))
+					visualize_prediction(net, color.shape[0], device,color,fname=os.path.join(args.output, 'pretrain', 'meshes','pred_epoch_%04d_iter_%04d'%(epoch, train_idx)))
+					#render_img(device, color, net, K, R, C, origin, scaling, fname='color_epoch_%04d_iter_%04d.png'%(epoch, train_idx))
+					#render_img(device, gt_depth, net, K, R, C, origin, scaling, fname='depth_epoch_%04d_iter_%04d.png'%(epoch, train_idx))
 
 
 

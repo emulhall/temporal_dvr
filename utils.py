@@ -121,18 +121,24 @@ def patch_sample(im, batch_size, n_points, patch_size=1,continuous=True):
 
 
 
-def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0,2.4]):
+def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.,4.], use_cube_intersection=True):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
+	device=p.device
+
+	batch_size,n_points,_ = p.shape
 
 	d_freespace = torch.rand(p.shape[0], p.shape[1]).cuda(non_blocking=True)*depth_range[1]
-	d_freespace=d_freespace.unsqueeze(-1) # (B, n_points, 1)
+	if use_cube_intersection:
+		_,d_cube_intersection,mask_cube = intersect_camera_rays_with_unit_cube(p, K,R,C,origin,scaling,use_ray_length_as_depth=False)
+		d_cube = d_cube_intersection[mask_cube]
+		d_freespace[mask_cube] = d_cube[:,0] + torch.rand(d_cube.shape[0]).to(device)*(d_cube[:,1]-d_cube[:,0])
 	
 
-	p_freespace = camera_to_world(p, d_freespace, K, R, C, origin, scaling)
+	p_freespace = camera_to_world(p, d_freespace.unsqueeze(-1), K, R, C, origin, scaling)
 
 	return p_freespace
 
-def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, use_cube_intersection=True, occupancy_random_normal=False, depth_range=[0,2.4]):
+def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, use_cube_intersection=False, occupancy_random_normal=False, depth_range=[0.,4.]):
 	#modified from from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	device = pixels.device
 	batch_size,n_points,_=pixels.shape
@@ -156,6 +162,14 @@ def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, use_c
 		d_occupancy[mask_gt_depth] = depth_gt[mask_gt_depth]
 
 	p_occupancy = camera_to_world(pixels, d_occupancy.unsqueeze(-1), K, R, C, origin, scaling)
+
+	'''p=pixels
+	p[...,0]=(p[...,0]+1)*256/2
+	p[...,1]=(p[...,1]+1)*256/2
+	p=p.long()
+
+	temp = camera_to_world(p, d_occupancy.unsqueeze(-1), K, R, C, origin, scaling)
+	visualize_3D(temp.squeeze(0).cpu().numpy(),'temp.ply')'''
 
 	return p_occupancy
 
@@ -219,7 +233,7 @@ def check_ray_intersection_with_unit_cube(origin, ray_direction, padding=0.1, ep
 	# <n,x-p>=<n,origin+d*ray_direction -p_e>=0
 	# d = - <n,origin -p_e> / <n,ray_direction>
 
-	#Get poins on plane p_e
+	#Get points on plane p_e
 	p_distance = 0.5+padding/2
 	p_e = torch.ones(batch_size, n_points, 6).to(device)*p_distance
 	p_e[...,3:]*=-1
@@ -240,7 +254,7 @@ def check_ray_intersection_with_unit_cube(origin, ray_direction, padding=0.1, ep
 		(p_intersect[...,2] >= -(p_distance+eps))
 		).cpu()
 
-	#Corect rays intersect exactly 2 times
+	#Correct rays intersect exactly 2 times
 	mask_inside_cube = p_mask_inside_cube.sum(-1) == 2
 
 	#Get interval values for valid ps
@@ -326,3 +340,12 @@ def get_tensor_values(tensor,p,grid_sample=True,mode='nearest',with_mask=False, 
 		return values, mask	
 
 	return values
+
+
+
+def normalize_imagenet(x):
+	x = x.clone()
+	x[:, 0] = (x[:, 0] - 0.485) / 0.229
+	x[:, 1] = (x[:, 1] - 0.456) / 0.224
+	x[:, 2] = (x[:, 2] - 0.406) / 0.225
+	return x

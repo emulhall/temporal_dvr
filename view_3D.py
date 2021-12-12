@@ -1,5 +1,6 @@
 import numpy as np
 import open3d as o3d
+import torch
 
 def visualize_3D(X, fname='test_point_cloud.ply'):
 	"""
@@ -37,3 +38,16 @@ def visualize_3D_masked(X, mask, fname='test_point_cloud.ply'):
 	pcd=o3d.geometry.PointCloud()
 	pcd.points=o3d.utility.Vector3dVector(valid_X)
 	o3d.io.write_point_cloud(fname, pcd)
+
+
+def visualize_prediction(model, batch_size,device,inputs,fname='test'):
+	c = model.encode_inputs(inputs)
+	p = torch.rand(batch_size, 60000,3).to(device) - 0.5
+	with torch.no_grad():
+		occ = model.decode(p,c=c).probs
+		mask = occ > 0.5
+
+	for i in range(batch_size):
+		pi = p[i][mask[i]].cpu()
+		out_file = fname + '%d'%(i)+'.ply'
+		visualize_3D(pi.numpy(), fname=out_file)

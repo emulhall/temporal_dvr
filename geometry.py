@@ -64,18 +64,14 @@ def depth_to_3D(depth, K, R, C, scale_factor,origin,scale_est=1):
 	u = u.permute(0,2,1).cuda() # (B,2,N)
 
 	#Get the indices
-	#vv,uu=torch.meshgrid(torch.arange(depth.shape[2]), torch.arange(depth.shape[3]))
-	#vv=vv.flatten()
-	#uu=uu.flatten()
+	'''vv,uu=torch.meshgrid(torch.arange(depth.shape[2]), torch.arange(depth.shape[3]))
+	vv=vv.flatten()
+	uu=uu.flatten()
 
 	#Build coordinate matrices
-	#u=torch.cat((uu[np.newaxis,:], vv[np.newaxis,:]),axis=0).cuda(non_blocking=True)
-
-	#u=scale_factor*u
-	#u=torch.cat((u,torch.ones((1,len(uu))).cuda(non_blocking=True)),axis=0) #(3,N)
-
+	u=torch.cat((uu[np.newaxis,:], vv[np.newaxis,:]),axis=0).cuda(non_blocking=True)
 	#Tile to number of batches
-	#u=torch.repeat_interleave(u[np.newaxis,...], depth.shape[0],dim=0) #(B,2,N)
+	u=torch.repeat_interleave(u[np.newaxis,...], depth.shape[0],dim=0) #(B,2,N)'''
 	u=scale_factor[:,0,...]*u+torch.transpose(origin[:,0,...],1,2)
 	u=torch.cat((u,torch.ones((depth.shape[0],1,u.shape[-1])).cuda(non_blocking=True)),axis=1) #(B,3,N)
 

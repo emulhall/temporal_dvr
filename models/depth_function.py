@@ -4,11 +4,12 @@ import numpy as np
 import torch.nn as nn
 
 from utils import get_logits_from_prob, get_proposal_points_in_unit_cube
+from view_3D import visualize_3D
 
 
 class DepthModule(nn.Module):
 
-	def __init__(self, tau=0.5, n_steps=[128,129], n_secant_steps=8, depth_range=[0.,2,4],
+	def __init__(self, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[0.,4.],
 		method='secant',check_cube_intersection=True,max_points=3700000, schedule_ray_sampling=True,
 		schedule_milestones=[50000,100000,25000], init_resolution=16):
 		super().__init__()
@@ -27,7 +28,7 @@ class DepthModule(nn.Module):
 
 	def get_sampling_accuracy(self,it):
 		if len(self.schedule_milestones)==0:
-			return [128,129]
+			return [255,256]
 		else:
 			res = self.init_resolution
 			for i, milestone in enumerate(self.schedule_milestones):
@@ -49,7 +50,6 @@ class DepthModule(nn.Module):
 			self.check_cube_intersection, self.max_points] + [k for k in decoder.parameters()]
 
 			d_hat = self.calc_depth(*inputs)
-
 		else:
 			d_hat = torch.full((origin.shape[0],origin.shape[2]),np.inf)
 
@@ -82,7 +82,7 @@ class DepthFunction(torch.autograd.Function):
 
 
 	@staticmethod
-	def perform_ray_marching(origin, ray_direction, decoder, c=None, tau=0.5, n_steps=[128,129], n_secant_steps=8, depth_range=[0.,2.4], method='secant', check_cube_intersection=True, max_points=3500000):
+	def perform_ray_marching(origin, ray_direction, decoder, c=None, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[0.,4.], method='secant', check_cube_intersection=True, max_points=3500000):
 		batch_size, n_points, D = origin.shape
 		device=origin.device
 		logit_tau = get_logits_from_prob(tau)
@@ -97,6 +97,8 @@ class DepthFunction(torch.autograd.Function):
 			d_proposal[mask_inside_cube] = d_proposal_cube[mask_inside_cube]
 
 		p_proposal = origin.unsqueeze(2).repeat(1,1,n_steps,1)+ray_direction.unsqueeze(2).repeat(1,1,n_steps,1)*d_proposal
+
+		#visualize_3D(p_proposal.squeeze(0).reshape(-1,3).detach().cpu().numpy(),fname='p_proposal.ply')
 
 		#Evaluate all proposal points
 		with torch.no_grad():
@@ -181,7 +183,7 @@ class DepthFunction(torch.autograd.Function):
 			grad_p_dot_v = (grad_p*ray_direction).sum(-1)
 
 			if mask.sum() >0:
-				grad_p_dot_v[mask==0]=1
+				grad_p_dot_v[mask==0]=1.
 				grad_p_dot_v[abs(grad_p_dot_v)<eps] = eps
 				grad_outputs = -grad_output.squeeze(-1)
 				grad_outputs = grad_outputs/grad_p_dot_v
@@ -191,11 +193,11 @@ class DepthFunction(torch.autograd.Function):
 			if c is None or c.shape[-1]==0 or mask.sum()==0:
 				gradc = None
 			else:
-				torch.autograd.grad(f_p, c, retain_graph=True, grad_outputs=grad_outputs)[0]
+				gradc = torch.autograd.grad(f_p, c, retain_graph=True, grad_outputs=grad_outputs, allow_unused=True)[0]
 
-			#Gradients for network paameters phi
-			if mask.sum() >0:
-				grad_phi = torch.autograd.grad(f_p,[k for k in decoder.parameters()],grad_outputs=grad_outputs, retain_graph=True)
+			#Gradients for network parameters phi
+			if mask.sum() > 0:
+				grad_phi = torch.autograd.grad(f_p,[k for k in decoder.parameters()],grad_outputs=grad_outputs, retain_graph=True,allow_unused=True)
 			else:
 				grad_phi = [None for i in decoder.parameters()]
 
