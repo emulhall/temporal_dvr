@@ -10,6 +10,7 @@ import time
 from sklearn.neighbors import NearestNeighbors
 from geometry import camera_to_world, world_to_camera
 from view_3D import visualize_3D
+import math
 
 
 # **********************************************************************************************
@@ -57,119 +58,78 @@ def rescale_square(img, size):
 
 
 
-def sample(im,batch_size):
-	#Slightly modified arange_pixels from https://github.com/autonomousvision/differentiable_volumetric_rendering
-	h=im.shape[2]
-	w=im.shape[3]
+def sample(mask):
+	h=mask.shape[2]
+	w=mask.shape[3]
 
-	image_range=(-1,1)
+	batch_size = mask.shape[0]
 
-	n_points=h*w
-	pixel_locations = torch.meshgrid(torch.arange(0, w), torch.arange(0, h))
-	pixel_locations = torch.stack([pixel_locations[1], pixel_locations[0]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
-	pixel_scaled = pixel_locations.clone().float()
+	valid_points = torch.where(mask[:,0,...]>0)
 
-	pixel_scaled[...,0] = 2*pixel_scaled[...,0]/(w-1)-1
-	pixel_scaled[...,1] = 2*pixel_scaled[...,1]/(h-1)-1
+	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
 
-	return pixel_locations, pixel_scaled
-
-def rescale_origin(origin,w,h):
-	origin_rescaled=torch.zeros_like(origin)
-	origin_rescaled[...,0] = 2*origin[...,0]/(w-1)-1
-	origin_rescaled[...,1] = 2*origin[...,1]/(h-1)-1
-
-	return origin
+	return pixel_locations
 
 
-def patch_sample(im, batch_size, n_points, patch_size=1,continuous=True):
-	#Slightly modified patch_sample from https://github.com/autonomousvision/differentiable_volumetric_rendering
-	h_step=1/im.shape[2]
-	w_step=1/im.shape[3]
+def sample_n(mask, n_points):
+	batch_size =mask.shape[0]
 
-	n_patches = int(n_points/patch_size**2)
-	if continuous:
-		p = torch.rand(batch_size, n_patches,2)
-	else:
-		p_x = torch.randint(0, im.shape[3], size=(batch_size, n_patches,1)).float() /(im.shape[3]-1)
-		p_y=torch.randint(0, im.shape[2], size=(batch_size, n_patches,1)).float() /(im.shape[2]-1)
-		p = torch.cat((p_x, p_y),dim=-1)
+	h=mask.shape[2]
+	w=mask.shape[3]
 
-	p[...,0] *= 1-(patch_size-1)*w_step
-	p[...,1] *= 1-(patch_size-1)*h_step
+	batch_size = mask.shape[0]
 
-	patch_arange=torch.arange(patch_size)
-	x_offset, y_offset = torch.meshgrid(patch_arange, patch_arange)
-	offsets = torch.stack((x_offset.reshape(-1), y_offset.reshape(-1)),dim=1).view(1,1,-1,2).repeat(batch_size,n_patches,1,1).float()
+	valid_points = torch.where(mask[:,0,...]>0)
 
-	offsets[...,0]*=w_step
-	offsets[...,1]*=h_step
+	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
 
-	p = p.view(batch_size, n_patches,1,2)+offsets
+	#Get a sample of n_points
+	n = np.random.choice(pixel_locations.shape[1],size=n_points,replace=False)
 
-	p = p*2-1
+	p = pixel_locations[:,n,:]
 
-	p = p.view(batch_size, -1,2)
-	amax,amin = p.max(), p.min()
-	assert(amax<=1 and amin>=-1)
-
-	p_unscaled=p.clone().float()
-	p_unscaled[...,0] = (p_unscaled[...,0]+1)*(im.shape[3])/2
-	p_unscaled[...,1] = (p_unscaled[...,1]+1)*(im.shape[2])/2
-
-	return p_unscaled, p
+	return p
 
 
 
-def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.,4.], use_cube_intersection=True):
+def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.1,5.], depth_img=None, padding=1e-2):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	device=p.device
 
 	batch_size,n_points,_ = p.shape
 
-	d_freespace = torch.rand(p.shape[0], p.shape[1]).cuda(non_blocking=True)*depth_range[1]
-	if use_cube_intersection:
-		_,d_cube_intersection,mask_cube = intersect_camera_rays_with_unit_cube(p, K,R,C,origin,scaling,use_ray_length_as_depth=False)
-		d_cube = d_cube_intersection[mask_cube]
-		d_freespace[mask_cube] = d_cube[:,0] + torch.rand(d_cube.shape[0]).to(device)*(d_cube[:,1]-d_cube[:,0])
-	
+	d_freespace=None
+	if depth_img is not None:
+		d_freespace = get_tensor_values(depth_img,p[:,:int(3*n_points/4),:]) - padding
+		depth_min = float(torch.min(depth_img[depth_img>0]))
+		d_freespace = torch.cat([d_freespace, torch.from_numpy(np.random.choice(np.linspace(0, depth_min-padding, num=int(n_points/10)), size=math.ceil(n_points/4))).view(batch_size,-1,1).to(device)],dim=1)
+	else:
+		depth_min=depth_range[0]
 
-	p_freespace = camera_to_world(p, d_freespace.unsqueeze(-1), K, R, C, origin, scaling)
+		#Freespace points are outside of the cube of the object, which is defined by the min and max of the depth or depth range
+		d_freespace = torch.from_numpy(np.random.choice(np.linspace(0, depth_min-padding, num=int(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
+
+	p_freespace = camera_to_world(p, d_freespace, K, R, C, origin, scaling)
 
 	return p_freespace
 
-def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, use_cube_intersection=False, occupancy_random_normal=False, depth_range=[0.,4.]):
+def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, depth_range=[0.1,5.], padding=1.):
 	#modified from from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	device = pixels.device
 	batch_size,n_points,_=pixels.shape
 
-	if use_cube_intersection:
-		_,d_cube_intersection, mask_cube = intersect_camera_rays_with_unit_cube(pixels, K, R, C, origin, scaling, padding=0.,use_ray_length_as_depth=False)
-		d_cube=d_cube_intersection[mask_cube]
-
-	d_occupancy = torch.rand(pixels.shape[0], pixels.shape[1]).cuda(non_blocking=True)*depth_range[1]
-	if use_cube_intersection:
-		d_occupancy[mask_cube] = d_cube[:,0] + torch.rand(d_cube.shape[0]).to(device)*(d_cube[:,1]-d_cube[:,0])
-	if occupancy_random_normal:
-		d_occupancy = torch.rand(batch_size,n_points).to(device) * (depth_range[1]/8) + depth_range[1] /2
-		if use_cube_intersection:
-			mean_cube = d_cube.sum(-1) /2
-			std_cube = (d_cube[:,1] - d_cube[:,0]) /8
-			d_occupancy[mask_cube] = mean_cube + torch.randn(mean_cube.shape[0]).to(device)*std_cube
-
+	d_occupancy=None
 	if depth_img is not None:
-		depth_gt, mask_gt_depth = get_tensor_values(depth_img, pixels, squeeze_channel_dim=True, with_mask=True)
-		d_occupancy[mask_gt_depth] = depth_gt[mask_gt_depth]
+		d_occupancy = get_tensor_values(depth_img,pixels[:,:int(3*n_points/4),:]) + 1e-2
+		depth_max = float(torch.max(depth_img[depth_img>0]))
+		d_occupancy = torch.cat([d_occupancy, torch.from_numpy(np.random.choice(np.linspace(depth_max, depth_max+padding, num=int(n_points/10)), size=math.ceil(n_points/4))).view(batch_size,-1,1).to(device)],dim=1)
+	else:
+		depth_max=depth_range[1]
 
-	p_occupancy = camera_to_world(pixels, d_occupancy.unsqueeze(-1), K, R, C, origin, scaling)
+		#Freespace points are outside of the cube of the object, which is defined by the min and max of the depth or depth range
+		d_occupancy = torch.from_numpy(np.random.choice(np.linspace(depth_max, depth_max+padding, num=int(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
 
-	'''p=pixels
-	p[...,0]=(p[...,0]+1)*256/2
-	p[...,1]=(p[...,1]+1)*256/2
-	p=p.long()
-
-	temp = camera_to_world(p, d_occupancy.unsqueeze(-1), K, R, C, origin, scaling)
-	visualize_3D(temp.squeeze(0).cpu().numpy(),'temp.ply')'''
+	p_occupancy = camera_to_world(pixels, d_occupancy, K, R, C, origin, scaling)
 
 	return p_occupancy
 
@@ -306,22 +266,14 @@ def get_mask(tensor):
 		mask = mask.numpy()
 	return mask
 
-def get_tensor_values(tensor,p,grid_sample=True,mode='nearest',with_mask=False, squeeze_channel_dim=False):
+def get_tensor_values(tensor,p,with_mask=False, squeeze_channel_dim=False):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	p=to_pytorch(p)
 	tensor, is_numpy = to_pytorch(tensor,True)
-	batch_size,_,h,w=tensor.shape
+	batch_size,_,_,_=tensor.shape
 
-	if grid_sample:
-		p=p.unsqueeze(1)
-		values = torch.nn.functional.grid_sample(tensor.float(),p.float(),mode=mode)
-		values = values.squeeze(2)
-		values = values.permute(0,2,1)
-	else:
-		p[...,0]=(p[...,0]+1)*w/2
-		p[...,1]=(p[...,1]+1)*w/2
-		p=p.long()
-		values=tensor[torch.arange(batch_size).unsqueeze(-1),:,p[...,1],p[...,0]]
+	p=p.long()
+	values=tensor[torch.arange(batch_size).unsqueeze(-1),:,p[...,1],p[...,0]]
 
 	if with_mask:
 		mask = get_mask(values)

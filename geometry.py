@@ -48,30 +48,16 @@ def depth_to_3D(depth, K, R, C, scale_factor,origin,scale_est=1):
 	#Valid depth estimations are greater than or equal to 0
 	valid_mask=torch.where(depth>0,torch.ones_like(depth),torch.zeros_like(depth)) # (B,1,H,W)
 
-	#Calculate the 3D points
-	h=depth.shape[2]
-	w=depth.shape[3]
-	batch_size=depth.shape[0]
-
-	image_range=(-1,1)
-
-	n_points=h*w
-	pixel_locations = torch.meshgrid(torch.arange(0, w), torch.arange(0, h))
-
-	u = torch.stack([pixel_locations[1], pixel_locations[0]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1) # (B,N,2)
-	u[...,0]=2*u[...,0]/(w-1)-1
-	u[...,1]=2*u[...,1]/(h-1)-1
-	u = u.permute(0,2,1).cuda() # (B,2,N)
 
 	#Get the indices
-	'''vv,uu=torch.meshgrid(torch.arange(depth.shape[2]), torch.arange(depth.shape[3]))
+	vv,uu=torch.meshgrid(torch.arange(depth.shape[2]), torch.arange(depth.shape[3]))
 	vv=vv.flatten()
 	uu=uu.flatten()
 
 	#Build coordinate matrices
 	u=torch.cat((uu[np.newaxis,:], vv[np.newaxis,:]),axis=0).cuda(non_blocking=True)
 	#Tile to number of batches
-	u=torch.repeat_interleave(u[np.newaxis,...], depth.shape[0],dim=0) #(B,2,N)'''
+	u=torch.repeat_interleave(u[np.newaxis,...], depth.shape[0],dim=0) #(B,2,N)
 	u=scale_factor[:,0,...]*u+torch.transpose(origin[:,0,...],1,2)
 	u=torch.cat((u,torch.ones((depth.shape[0],1,u.shape[-1])).cuda(non_blocking=True)),axis=1) #(B,3,N)
 

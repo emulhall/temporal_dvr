@@ -10,8 +10,8 @@ from view_3D import visualize_3D
 class DepthModule(nn.Module):
 
 	def __init__(self, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[0.,4.],
-		method='secant',check_cube_intersection=True,max_points=3700000, schedule_ray_sampling=True,
-		schedule_milestones=[50000,100000,25000], init_resolution=16):
+		method='secant',max_points=3700000, schedule_ray_sampling=True,
+		schedule_milestones=[50000,100000,25000], check_cube_intersection=False,init_resolution=16):
 		super().__init__()
 		self.tau = tau
 		self.n_steps = n_steps
@@ -19,11 +19,11 @@ class DepthModule(nn.Module):
 		self.depth_range = depth_range
 		self.calc_depth=DepthFunction.apply
 		self.method = method
-		self.check_cube_intersection = check_cube_intersection
 		self.max_points = max_points
 		self.schedule_ray_sampling = schedule_ray_sampling
 		self.schedule_milestones = schedule_milestones
 		self.init_resolution = init_resolution
+		self.check_cube_intersection = check_cube_intersection
 
 
 	def get_sampling_accuracy(self,it):
@@ -37,7 +37,7 @@ class DepthModule(nn.Module):
 				res = res*2
 			return [res, res+1]
 
-	def forward(self, origin, ray_direction, decoder, c=None, it=None, n_steps=None):
+	def forward(self, origin, ray_direction, decoder, c=None, it=None, n_steps=None, depth_range=[0.,4.]):
 		if n_steps is None:
 			if self.schedule_ray_sampling and it is not None:
 				n_steps = self.get_sampling_accuracy(it)
@@ -46,16 +46,13 @@ class DepthModule(nn.Module):
 
 		if n_steps[1] > 1:
 			inputs = [origin, ray_direction, decoder, c, n_steps,
-			self.n_secant_steps, self.tau, self.depth_range, self.method,
-			self.check_cube_intersection, self.max_points] + [k for k in decoder.parameters()]
+			self.n_secant_steps, self.tau, depth_range, self.method, self.max_points] + [k for k in decoder.parameters()]
 
 			d_hat = self.calc_depth(*inputs)
 		else:
 			d_hat = torch.full((origin.shape[0],origin.shape[2]),np.inf)
 
 		return d_hat
-
-
 
 
 class DepthFunction(torch.autograd.Function):
@@ -82,7 +79,7 @@ class DepthFunction(torch.autograd.Function):
 
 
 	@staticmethod
-	def perform_ray_marching(origin, ray_direction, decoder, c=None, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[0.,4.], method='secant', check_cube_intersection=True, max_points=3500000):
+	def perform_ray_marching(origin, ray_direction, decoder, c=None, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[0.,4.], method='secant', max_points=3500000):
 		batch_size, n_points, D = origin.shape
 		device=origin.device
 		logit_tau = get_logits_from_prob(tau)
@@ -92,10 +89,6 @@ class DepthFunction(torch.autograd.Function):
 		d_proposal = torch.linspace(depth_range[0],depth_range[1],steps=n_steps).view(1,1,n_steps,1).to(device)
 		d_proposal = d_proposal.repeat(batch_size, n_points, 1,1)
 
-		if check_cube_intersection:
-			d_proposal_cube, mask_inside_cube = get_proposal_points_in_unit_cube(origin, ray_direction, padding=0.1, eps=1e-6, n_steps=n_steps)
-			d_proposal[mask_inside_cube] = d_proposal_cube[mask_inside_cube]
-
 		p_proposal = origin.unsqueeze(2).repeat(1,1,n_steps,1)+ray_direction.unsqueeze(2).repeat(1,1,n_steps,1)*d_proposal
 
 		#visualize_3D(p_proposal.squeeze(0).reshape(-1,3).detach().cpu().numpy(),fname='p_proposal.ply')
@@ -103,7 +96,6 @@ class DepthFunction(torch.autograd.Function):
 		#Evaluate all proposal points
 		with torch.no_grad():
 			val = torch.cat([(decoder(p_split,c,only_occupancy=True)-logit_tau) for p_split in torch.split(p_proposal.view(batch_size,-1,3),int(max_points/batch_size),dim=1)],dim=1).view(batch_size,-1,n_steps)
-
 
 		#Create mask for valid points where the first point is not occupied
 		mask_0_not_occupied = val[...,0] <0
@@ -151,12 +143,12 @@ class DepthFunction(torch.autograd.Function):
 
 	@staticmethod
 	def forward(ctx, *input):
-		origin, ray_direction, decoder, c, n_steps, n_secant_steps, tau, depth_range,method, check_cube_intersection, max_points = input[:11]
+		origin, ray_direction, decoder, c, n_steps, n_secant_steps, tau, depth_range,method, max_points = input[:10]
 
 		#Get depth values
 		with torch.no_grad():
 			d_pred, p_pred, mask, mask_0_not_occupied = DepthFunction.perform_ray_marching(origin, ray_direction, decoder, c, tau, n_steps, 
-																							n_secant_steps, depth_range, method, check_cube_intersection, max_points)
+																							n_secant_steps, depth_range, method, max_points)
 
 		d_pred[mask==0] = np.inf
 		d_pred[mask_0_not_occupied==0] = 0
@@ -193,7 +185,7 @@ class DepthFunction(torch.autograd.Function):
 			if c is None or c.shape[-1]==0 or mask.sum()==0:
 				gradc = None
 			else:
-				gradc = torch.autograd.grad(f_p, c, retain_graph=True, grad_outputs=grad_outputs, allow_unused=True)[0]
+				gradc = torch.autograd.grad(f_p, c, retain_graph=True, grad_outputs=grad_outputs,allow_unused=True)[0]
 
 			#Gradients for network parameters phi
 			if mask.sum() > 0:
@@ -202,5 +194,5 @@ class DepthFunction(torch.autograd.Function):
 				grad_phi = [None for i in decoder.parameters()]
 
 			#Return gradients for c,z and network parameters and none for all other inputs
-			out = [None, None, None, gradc, None, None, None, None, None, None, None] + list(grad_phi)
+			out = [None, None, None, gradc, None, None, None, None, None, None] + list(grad_phi)
 			return tuple(out)

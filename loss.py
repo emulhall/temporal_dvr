@@ -3,7 +3,7 @@ from torch.nn import functional as F
 from utils import get_tensor_values
 from geometry import camera_to_world, world_to_camera
 
-def calculate_photoconsistency_loss(lambda_rgb, lambda_image_gradients,mask_rgb, rgb_pred, img,pixels, reduction_method, loss, patch_size, eval_mode=False):
+def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, reduction_method, loss, eval_mode=False):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	if lambda_rgb!=0 and mask_rgb.sum() >0:
 		batch_size,n_points,_=rgb_pred.shape
@@ -18,16 +18,6 @@ def calculate_photoconsistency_loss(lambda_rgb, lambda_image_gradients,mask_rgb,
 
 		if eval_mode:
 			loss_rgb_eval = l1_loss(rgb_pred[mask_rgb],rgb_gt[mask_rgb],'mean')*lambda_rgb
-
-		#Image gradient loss
-		if lambda_image_gradients !=0:
-			assert(patch_size >1)
-			loss_grad = image_gradient_loss(rgb_pred, rgb_gt, mask_rgb, patch_size, reduction_method)*lambda_image_gradients/batch_size
-			loss['loss']+=loss_grad
-			loss['loss_image_gradient'] = loss_grad
-
-		if eval_mode:
-			loss['loss_rgb_eval'] = loss_rgb_eval
 
 
 def l1_loss(val_gt, val_pred, reduction_method='sum',eps=0.,sigma_pow=1,feat_dim=True):
@@ -80,7 +70,7 @@ def image_gradient_loss(val_pred, val_gt, mask, patch_size, reduction_method='su
 
 
 def calculate_depth_loss(lambda_depth,mask_depth, depth_img, pixels, K, R, C, origin, scaling, p_world_hat, reduction_method, loss, eval_mode=False, depth_loss_on_world_points=False):
-	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering	
+	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	if lambda_depth!=0 and mask_depth.sum()>0:
 		batch_size,n_points,_=p_world_hat.shape
 		loss_depth_val = torch.tensor(10)
@@ -116,16 +106,16 @@ def calculate_normal_loss(lambda_normal,normals, batch_size, loss, eval_mode=Fal
 	if lambda_normal !=0:
 		normal_loss = torch.norm(normals[0]-normals[1],dim=-1).sum()*lambda_normal /batch_size
 		loss['loss']+=normal_loss
-		loss['normal_loss']+=normal_loss
+		loss['loss_normal']+=normal_loss
 		if eval_mode:
 			normal_loss_eval = torch.norm(normals[0] - normals[1],dim=-1).mean()*lambda_normal
-			loss['normal_loss_eval'] = normal_loss_eval
+			loss['loss_normal_eval'] = normal_loss_eval
 
 
-def calculate_freespace_loss(lambda_freespace, logits_hat, mask_freespace, reduction_method, loss):
+def calculate_freespace_loss(lambda_freespace, logits_hat, reduction_method, loss):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering		
 	batch_size=logits_hat.shape[0]
-	loss_freepace = freespace_loss(logits_hat[mask_freespace], reduction_method=reduction_method)*lambda_freespace/batch_size
+	loss_freepace = freespace_loss(logits_hat, reduction_method=reduction_method)*lambda_freespace/batch_size
 	loss['loss']+=loss_freepace
 	loss['loss_freespace']+=loss_freepace
 
@@ -149,11 +139,11 @@ def cross_entropy_occupancy_loss(logits_pred, is_occupied=True, weights=None, re
 
 	return apply_reduction(loss_out, reduction_method)
 
-def calculate_occupancy_loss(lambda_occupancy,logits_hat, mask_occupancy, reduction_method,loss):
+def calculate_occupancy_loss(lambda_occupancy,logits_hat, reduction_method,loss):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering	
 	batch_size=logits_hat.shape[0]
 
-	loss_occupancy = occupancy_loss(logits_hat[mask_occupancy], reduction_method=reduction_method) * lambda_occupancy/batch_size
+	loss_occupancy = occupancy_loss(logits_hat, reduction_method=reduction_method) * lambda_occupancy/batch_size
 	loss['loss']+=loss_occupancy
 	loss['loss_occupancy']+=loss_occupancy
 

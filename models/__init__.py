@@ -22,12 +22,12 @@ class DVR(nn.Module):
 		self.call_depth_function = depth_function.DepthModule(**depth_function_kwargs)
 
 
-	def forward(self, p, p_occupancy, p_freespace, inputs, K, R, C, origin, scale, it=None, sparse_depth=None,calc_normals=False, **kwargs):
+	def forward(self, p, p_occupancy, p_freespace, inputs, K, R, C, origin, scale, it=None,calc_normals=True, depth_range=[0.1,5.],**kwargs):
 
 		#Encode inputs
 		c=self.encode_inputs(inputs) #(1,c_dim)
 
-		p_world, mask_pred, mask_zero_occupied = self.pixels_to_world(p, K, R, C, origin, scale, c,it)
+		p_world, mask_pred, mask_zero_occupied = self.pixels_to_world(p, K, R, C, origin, scale, c,it, depth_range=depth_range)
 
 		rgb_pred = self.decode_color(p_world, c=c)
 
@@ -37,7 +37,6 @@ class DVR(nn.Module):
 		# eval freespace at p and
 		# fill in predicted world points
 
-		p_freespace[mask_pred] = p_world[mask_pred].detach()
 		logits_freespace = self.decode(p_freespace,c=c).logits
 
 		if calc_normals:
@@ -45,11 +44,8 @@ class DVR(nn.Module):
 		else:
 			normals = None
 
-		#if spase_depth is not None:
-		mask_pred_sparse=None
-		p_world_sparse=None
 
-		return (p_world, rgb_pred, logits_occupancy, logits_freespace, mask_pred, p_world_sparse, mask_pred_sparse, normals)
+		return (p_world, rgb_pred, logits_occupancy, logits_freespace, mask_pred, normals)
 
 	def get_normals(self, points, mask, c=None, h_sample=1e-3, h_finite_difference=1e-3):
 
@@ -81,7 +77,7 @@ class DVR(nn.Module):
 			torch.tensor([0,1.,0]).view(1,1,3).repeat(n_points,1,1),
 			torch.tensor([0,-1.,0]).view(1,1,3).repeat(n_points,1,1),
 			torch.tensor([0,0,1.]).view(1,1,3).repeat(n_points,1,1),
-			torch.tensor([0,0,-1.].view(1,1,3).repeat(n_points,1,1))],dim=1).cuda(non_blocking=True) * h/2
+			torch.tensor([0,0,-1.]).view(1,1,3).repeat(n_points,1,1)],dim=1).cuda(non_blocking=True) * h/2
 
 		points_eval = (points.unsqueeze(1).repeat(1,6,1)+step).view(-1,3)
 
@@ -110,22 +106,22 @@ class DVR(nn.Module):
 		return rgb_hat
 
 
-	def pixels_to_world(self,p, K, R, C, origin, scale, c,it=None, sampling_accuracy=None):
+	def pixels_to_world(self,p, K, R, C, origin, scale, c,it=None, sampling_accuracy=None, depth_range=[0.1,5.]):
 		p_world = points_to_world(p, K, R, C, origin, scale) # B,n_points,3
 
 		c_world = C.squeeze(1).permute(0,2,1).repeat(1,p.shape[1],1)
 
 		ray = p_world - c_world
 
-		d_hat, mask_pred, mask_zero_occupied = self.march_along_ray(c_world, ray, c, it,sampling_accuracy)
+		d_hat, mask_pred, mask_zero_occupied = self.march_along_ray(c_world, ray, c, it,sampling_accuracy,depth_range=depth_range)
 
 		p_world_hat = c_world + ray*d_hat.unsqueeze(-1)
 
 		return p_world_hat, mask_pred, mask_zero_occupied
 
 
-	def march_along_ray(self,origin, ray_direction, c=None, it=None, sampling_accuracy=None):
-		d_i = self.call_depth_function(origin, ray_direction, self.decoder, c=c, it=it, n_steps=sampling_accuracy)
+	def march_along_ray(self,origin, ray_direction, c=None, it=None, sampling_accuracy=None, depth_range=[0.1,5.]):
+		d_i = self.call_depth_function(origin, ray_direction, self.decoder, c=c, it=it, n_steps=sampling_accuracy,depth_range=depth_range)
 
 		#Get mask for where first evaluation point is occupied
 		mask_zero_occupied = d_i ==0
@@ -133,7 +129,7 @@ class DVR(nn.Module):
 		#Get mask for predicted depth
 		mask_pred = get_mask(d_i).detach()
 
-		d_hat = torch.ones_like(d_i).cuda(non_blocking=True)
+		d_hat = torch.zeros_like(d_i).cuda(non_blocking=True)
 		d_hat[mask_pred] = d_i[mask_pred]
 		d_hat[mask_zero_occupied] = 0.
 
