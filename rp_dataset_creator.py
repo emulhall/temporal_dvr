@@ -58,19 +58,11 @@ def create_split(ROOT_dir,train):
 			#Get color paths for camera and two closest cameras
 			color_path=s
 
-			#Get DensePose paths for camera and two closest cameras
-			dp_path=s.replace('color','densepose')
-
 			#Get mask paths for camera nad two closest cameras
 			mask_path=s.replace('color','gr_mask')
 
 			#Get depth paths for camera and two closest cameras
 			gt_depth_path=s.replace('color','complete_depth').replace('.png','.txt')
-
-			#Get the normal paths for camera and two closest cameras
-			gt_norm_path_1=s.replace('color','complete_normal').replace('.png','_1.txt')
-			gt_norm_path_2=s.replace('color','complete_normal').replace('.png','_2.txt')
-			gt_norm_path_3=s.replace('color','complete_normal').replace('.png','_3.txt')
 
 			#Get the bounding box coordinates for camera and two closest cameras
 			bbox=s.replace('color','boundingBox').replace('.png','.txt')
@@ -92,8 +84,6 @@ def create_split(ROOT_dir,train):
 			#Append the paths to the correct spots in the split
 			final_split[0][0].append(color_path)
 
-			final_split[0][1].append(dp_path)
-
 			final_split[0][2].append(mask_path)
 
 			final_split[0][3].append(bbox)
@@ -105,10 +95,6 @@ def create_split(ROOT_dir,train):
 			final_split[0][6].append(C)
 
 			final_split[0][7].append(gt_depth_path)
-
-			final_split[0][8].append(gt_norm_path_1)
-			final_split[0][9].append(gt_norm_path_2)
-			final_split[0][10].append(gt_norm_path_3)
 
 			final_split[0][13].append(np.array(origin,dtype='f'))
 

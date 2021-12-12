@@ -59,6 +59,8 @@ def rescale_square(img, size):
 
 
 def sample(mask):
+	batch_size =mask.shape[0]
+
 	h=mask.shape[2]
 	w=mask.shape[3]
 
@@ -68,7 +70,12 @@ def sample(mask):
 
 	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
 
-	return pixel_locations
+	#Get a sample of n_points
+	n = np.random.choice(pixel_locations.shape[1],size=pixel_locations.shape[1],replace=False)
+
+	p = pixel_locations[:,n,:]
+
+	return p
 
 
 def sample_n(mask, n_points):
@@ -92,7 +99,7 @@ def sample_n(mask, n_points):
 
 
 
-def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.1,5.], depth_img=None, padding=1e-2):
+def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.1,5.], depth_img=None, padding=1e-3):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	device=p.device
 
@@ -120,7 +127,7 @@ def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, depth
 
 	d_occupancy=None
 	if depth_img is not None:
-		d_occupancy = get_tensor_values(depth_img,pixels[:,:int(3*n_points/4),:]) + 1e-2
+		d_occupancy = get_tensor_values(depth_img,pixels[:,:int(3*n_points/4),:]) + 1e-3
 		depth_max = float(torch.max(depth_img[depth_img>0]))
 		d_occupancy = torch.cat([d_occupancy, torch.from_numpy(np.random.choice(np.linspace(depth_max, depth_max+padding, num=int(n_points/10)), size=math.ceil(n_points/4))).view(batch_size,-1,1).to(device)],dim=1)
 	else:

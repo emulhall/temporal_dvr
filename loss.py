@@ -3,7 +3,7 @@ from torch.nn import functional as F
 from utils import get_tensor_values
 from geometry import camera_to_world, world_to_camera
 
-def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, reduction_method, loss, eval_mode=False):
+def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, reduction_method, loss):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	if lambda_rgb!=0 and mask_rgb.sum() >0:
 		batch_size,n_points,_=rgb_pred.shape
@@ -15,9 +15,6 @@ def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, 
 
 		loss['loss']+=loss_rgb
 		loss['loss_rgb']+=loss_rgb
-
-		if eval_mode:
-			loss_rgb_eval = l1_loss(rgb_pred[mask_rgb],rgb_gt[mask_rgb],'mean')*lambda_rgb
 
 
 def l1_loss(val_gt, val_pred, reduction_method='sum',eps=0.,sigma_pow=1,feat_dim=True):
@@ -69,11 +66,10 @@ def image_gradient_loss(val_pred, val_gt, mask, patch_size, reduction_method='su
 	return apply_reduction(loss_out, reduction_method)
 
 
-def calculate_depth_loss(lambda_depth,mask_depth, depth_img, pixels, K, R, C, origin, scaling, p_world_hat, reduction_method, loss, eval_mode=False, depth_loss_on_world_points=False):
+def calculate_depth_loss(lambda_depth,mask_depth, depth_img, pixels, K, R, C, origin, scaling, p_world_hat, reduction_method, loss, depth_loss_on_world_points=False):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	if lambda_depth!=0 and mask_depth.sum()>0:
 		batch_size,n_points,_=p_world_hat.shape
-		loss_depth_val = torch.tensor(10)
 
 		#Check if all values are valid
 		depth_gt, mask_gt_depth = get_tensor_values(depth_img,pixels,squeeze_channel_dim=True, with_mask=True)
@@ -81,19 +77,12 @@ def calculate_depth_loss(lambda_depth,mask_depth, depth_img, pixels, K, R, C, or
 		if depth_loss_on_world_points:
 			p_world = camera_to_world(pixels, depth_gt.unsqueeze(-1), K,R,C,origin,scaling)
 			loss_depth = l2_loss(p_world_hat[mask_depth], p_world[mask_depth],reduction_method)*lambda_depth/batch_size
-			if eval_mode:
-				loss_depth_val = l2_loss(p_world_hat[mask_depth], p_world[mask_depth],'mean') *lambda_depth
 		else:
 			d_pred = world_to_camera(p_world_hat, K, R, C, origin, scaling)[...,-1]
 			loss_depth = l1_loss(d_pred[mask_depth], depth_gt[mask_depth],reduction_method,feat_dim=False)*lambda_depth/batch_size
 
-			if eval_mode:
-				loss_depth_val = l1_loss(d_pred[mask_depth], depth_gt[mask_depth],'mean',feat_dim=False)*lambda_depth
-
 		loss['loss']+=loss_depth
 		loss['loss_depth']+=loss_depth
-		loss['loss_depth_eval']+=loss_depth_val
-
 
 def l2_loss(val_gt, val_pred, reduction_method='sum'):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering		
@@ -101,15 +90,12 @@ def l2_loss(val_gt, val_pred, reduction_method='sum'):
 	loss_out = torch.norm((val_gt-val_pred),dim=-1)
 	return apply_reduction(loss_out,reduction_method)
 
-def calculate_normal_loss(lambda_normal,normals, batch_size, loss, eval_mode=False):
+def calculate_normal_loss(lambda_normal,normals, batch_size, loss):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering		
 	if lambda_normal !=0:
 		normal_loss = torch.norm(normals[0]-normals[1],dim=-1).sum()*lambda_normal /batch_size
 		loss['loss']+=normal_loss
 		loss['loss_normal']+=normal_loss
-		if eval_mode:
-			normal_loss_eval = torch.norm(normals[0] - normals[1],dim=-1).mean()*lambda_normal
-			loss['loss_normal_eval'] = normal_loss_eval
 
 
 def calculate_freespace_loss(lambda_freespace, logits_hat, reduction_method, loss):

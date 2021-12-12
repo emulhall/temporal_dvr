@@ -25,8 +25,6 @@ class RenderPeopleDataset(Dataset):
 
 		color = self.to_tensor(Image.open(self.data_info[0][0][index]).resize((256,256)))
 
-		dp = Image.open(self.data_info[0][1][index]).resize((256,256))
-
 		mask = cv2.resize(cv2.imread(self.data_info[0][2][index]),(256,256),interpolation=cv2.INTER_NEAREST)
 		K = np.loadtxt(self.data_info[0][4][index],delimiter=',')
 		R = np.loadtxt(self.data_info[0][5][index],delimiter=',')
@@ -43,14 +41,6 @@ class RenderPeopleDataset(Dataset):
 		mask_refined_1D = mask_refined[0,...]
 
 
-		#Build the normal from the 3 files
-		gt_norm_1_0 = np.genfromtxt(self.data_info[0][8][index],delimiter=',')
-		gt_norm_2_0 = np.genfromtxt(self.data_info[0][9][index],delimiter=',')
-		gt_norm_3_0 = np.genfromtxt(self.data_info[0][10][index],delimiter=',')
-		gt_norm = np.concatenate((gt_norm_1_0[...,np.newaxis], gt_norm_2_0[...,np.newaxis], gt_norm_3_0[...,np.newaxis]), axis=2)
-		gt_norm = self.to_tensor(cv2.resize(gt_norm, (256,256),interpolation=cv2.INTER_NEAREST))
-
-
 		gt_depth = self.to_tensor(np.asarray(gt_depth,dtype='f'))
 
 		origin = self.data_info[0][13][index]
@@ -59,13 +49,11 @@ class RenderPeopleDataset(Dataset):
 
 		#Refine color image, depth image and normal image using the refined mask
 		color=torch.where(mask_refined>0,color,torch.ones_like(color))
-		gt_norm=gt_norm*mask_refined
 		gt_depth=gt_depth*mask_refined_1D[np.newaxis,...]
 
 
 		output['color'] = color
 
-		output['dp'] = self.to_tensor(dp)
 
 		output['mask'] = mask_refined
 
@@ -76,8 +64,6 @@ class RenderPeopleDataset(Dataset):
 		output['C'] = self.to_tensor(np.asarray(C[...,np.newaxis],dtype='f'))
 
 		output['gt_depth'] = gt_depth
-
-		output['gt_norm'] = gt_norm
 
 		output['origin'] = self.to_tensor(np.asarray(origin[np.newaxis,...],dtype='f'))
 
