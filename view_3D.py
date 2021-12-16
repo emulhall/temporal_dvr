@@ -40,14 +40,12 @@ def visualize_3D_masked(X, mask, fname='test_point_cloud.ply'):
 	o3d.io.write_point_cloud(fname, pcd)
 
 
-def visualize_prediction(model, batch_size,device,inputs,fname='test'):
-	c = model.encode_inputs(inputs)
-	p = torch.rand(batch_size, 60000,3).to(device) - 0.5
-	with torch.no_grad():
-		occ = model.decode(p,c=c).probs
-		mask = occ > 0.5
+def save_3D(X, mask,fname):
+	x=X[0,...]
+	y=X[1,...]
+	z=X[2,...]
 
-	for i in range(batch_size):
-		pi = p[i][mask[i]].cpu()
-		out_file = fname + '%d'%(i)+'.ply'
-		visualize_3D(pi.numpy(), fname=out_file)
+	np.savetxt(fname+'_x.txt',x)
+	np.savetxt(fname+'_y.txt',y)
+	np.savetxt(fname+'_z.txt',z)
+	np.savetxt(fname+'_mask.txt',mask)

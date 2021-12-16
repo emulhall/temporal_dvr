@@ -76,10 +76,14 @@ def create_split(ROOT_dir,train):
 			#Get the camera center matrix for camera and two closest cameras
 			C=os.path.join(head, str(c),'camera','cen.txt')
 
-			dp=np.asarray(Image.open(dp_path))
-
 			origin,scaling=calculate_scaling_and_origin_rp(np.loadtxt(bbox, delimiter=','),512)
 
+			if origin.shape!=(2,):
+				print(origin.shape)
+				print(c)
+			if scaling.shape!=():
+				print(scaling.shape)
+				print(c)
 
 			#Append the paths to the correct spots in the split
 			final_split[0][0].append(color_path)
@@ -117,5 +121,5 @@ if __name__ == '__main__':
 		os.mkdir(args.output)
 
 	final_dict={'train': create_split(args.input,True), 'val':create_split(args.input,False)}
-	with open(os.path.join(args.output, 'RenderPeople.pkl'), 'wb') as f:
+	with open(os.path.join(args.output, 'RenderPeople_dvr.pkl'), 'wb') as f:
 		pickle.dump(final_dict, f)

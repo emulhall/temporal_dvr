@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn as nn
 
 from utils import get_logits_from_prob, get_proposal_points_in_unit_cube
-from view_3D import visualize_3D
+#from view_3D import visualize_3D
 
 
 class DepthModule(nn.Module):
@@ -169,7 +169,7 @@ class DepthFunction(torch.autograd.Function):
 
 		with torch.enable_grad():
 			p_pred.requires_grad = True
-			f_p = decoder(p_pred, only_occupancy=True)
+			f_p = decoder(p_pred,c,only_occupancy=True)
 			f_p_sum = f_p.sum()
 			grad_p = torch.autograd.grad(f_p_sum, p_pred, retain_graph=True)[0]
 			grad_p_dot_v = (grad_p*ray_direction).sum(-1)
@@ -185,11 +185,11 @@ class DepthFunction(torch.autograd.Function):
 			if c is None or c.shape[-1]==0 or mask.sum()==0:
 				gradc = None
 			else:
-				gradc = torch.autograd.grad(f_p, c, retain_graph=True, grad_outputs=grad_outputs,allow_unused=True)[0]
+				gradc = torch.autograd.grad(f_p, c, retain_graph=True, grad_outputs=grad_outputs)[0]
 
 			#Gradients for network parameters phi
 			if mask.sum() > 0:
-				grad_phi = torch.autograd.grad(f_p,[k for k in decoder.parameters()],grad_outputs=grad_outputs, retain_graph=True,allow_unused=True)
+				grad_phi = torch.autograd.grad(f_p,[k for k in decoder.parameters()],grad_outputs=grad_outputs, retain_graph=True, allow_unused=True)
 			else:
 				grad_phi = [None for i in decoder.parameters()]
 

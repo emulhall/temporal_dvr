@@ -5,7 +5,7 @@ from torch import distributions as dist
 
 from models import depth_function, decoder
 from utils import points_to_world, normalize_tensor, get_mask
-from view_3D import visualize_3D
+#from view_3D import visualize_3D
 
 class DVR(nn.Module):
 	def __init__(self, decoder, encoder=None, device=None,depth_function_kwargs={}):
@@ -22,7 +22,7 @@ class DVR(nn.Module):
 		self.call_depth_function = depth_function.DepthModule(**depth_function_kwargs)
 
 
-	def forward(self, p, p_occupancy, p_freespace, inputs, K, R, C, origin, scale, it=None,calc_normals=True, depth_range=[0.1,5.],**kwargs):
+	def forward(self, p, p_occupancy, p_freespace, p_mask,inputs, K, R, C, origin, scale, p_temporal_1=None, p_temporal_2=None, origin_2=None, scale_2=None, inputs_2=None, it=None,calc_normals=True, depth_range=[0.1,5.],**kwargs):
 
 		#Encode inputs
 		c=self.encode_inputs(inputs) #(1,c_dim)
@@ -39,13 +39,26 @@ class DVR(nn.Module):
 
 		logits_freespace = self.decode(p_freespace,c=c).logits
 
+		logits_mask = self.decode(p_mask,c=c).logits
+
 		if calc_normals:
 			normals = self.get_normals(p_world.detach(), mask_pred, c=c)
 		else:
 			normals = None
 
+		if p_temporal_1 is not None and p_temporal_2 is not None and origin_2 is not None and scale_2 is not None and inputs_2 is not None:
+			c_2 = self.encode_inputs(inputs_2)
 
-		return (p_world, rgb_pred, logits_occupancy, logits_freespace, mask_pred, normals)
+			p_world_1, mask_pred_1, mask_zero_occupied_1 = self.pixels_to_world(p_temporal_1, K, R, C, origin, scale, c,it, depth_range=depth_range)
+			p_world_2, mask_pred_2, mask_zero_occupied_2 = self.pixels_to_world(p_temporal_2, K, R, C, origin_2, scale_2, c_2,it, depth_range=depth_range)
+
+			rgb_pred_1 = self.decode_color(p_world_1,c=c)
+			rgb_pred_2 = self.decode_color(p_world_2,c=c_2)
+		else:
+			p_world_1, mask_pred_1, p_world_2, mask_pred_2,  rgb_pred_1, rgb_pred_2 = None, None, None, None, None, None
+
+
+		return (p_world, rgb_pred, logits_occupancy, logits_freespace, logits_mask,mask_pred, normals,p_world_1,mask_pred_1, p_world_2, mask_pred_2, rgb_pred_1, rgb_pred_2)
 
 	def get_normals(self, points, mask, c=None, h_sample=1e-3, h_finite_difference=1e-3):
 

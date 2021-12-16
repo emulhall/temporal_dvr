@@ -1,6 +1,6 @@
 import torch
 from torch.nn import functional as F
-from utils import get_tensor_values
+from utils import get_tensor_values, transform_densepose
 from geometry import camera_to_world, world_to_camera
 
 def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, reduction_method, loss):
@@ -15,6 +15,30 @@ def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, 
 
 		loss['loss']+=loss_rgb
 		loss['loss_rgb']+=loss_rgb
+
+def calculate_temporal_photoconsistency_loss(lambda_temporal_rgb, mask_rgb_1, mask_rgb_2, rgb_pred_1, rgb_pred_2,reduction_method, loss):
+	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
+	mask_rgb = mask_rgb_1 & mask_rgb_2
+	
+	if lambda_temporal_rgb!=0 and mask_rgb.sum() >0 :
+		batch_size,n_points,_=rgb_pred_1.shape
+
+		#RGB loss
+		loss_rgb = l1_loss(rgb_pred_1[mask_rgb],rgb_pred_2[mask_rgb],reduction_method)*lambda_temporal_rgb/batch_size
+
+		loss['loss']+=loss_rgb
+		loss['loss_temporal_rgb']+=loss_rgb
+
+def calculate_temporal_loss(lambda_temporal, iuv_1, iuv_2,mask_1, mask_2, p_pred_1, p_pred_2,reduction_method, loss):
+	mask_temp= mask_1 & mask_2
+	if lambda_temporal!=0 and mask_temp.sum() >0:
+
+		PC2p, PC1_2 = transform_densepose(p_pred_1,p_pred_2, iuv_1, iuv_2)
+
+		loss_temporal = l1_loss(PC2p[mask_temp.repeat(3,1)],PC1_2[mask_temp.repeat(3,1)])
+
+		loss['loss']+=loss_temporal
+		loss['loss_temporal']+=loss_temporal
 
 
 def l1_loss(val_gt, val_pred, reduction_method='sum',eps=0.,sigma_pow=1,feat_dim=True):
@@ -74,12 +98,9 @@ def calculate_depth_loss(lambda_depth,mask_depth, depth_img, pixels, K, R, C, or
 		#Check if all values are valid
 		depth_gt, mask_gt_depth = get_tensor_values(depth_img,pixels,squeeze_channel_dim=True, with_mask=True)
 		mask_depth &=mask_gt_depth
-		if depth_loss_on_world_points:
-			p_world = camera_to_world(pixels, depth_gt.unsqueeze(-1), K,R,C,origin,scaling)
-			loss_depth = l2_loss(p_world_hat[mask_depth], p_world[mask_depth],reduction_method)*lambda_depth/batch_size
-		else:
-			d_pred = world_to_camera(p_world_hat, K, R, C, origin, scaling)[...,-1]
-			loss_depth = l1_loss(d_pred[mask_depth], depth_gt[mask_depth],reduction_method,feat_dim=False)*lambda_depth/batch_size
+		
+		d_pred = world_to_camera(p_world_hat, K, R, C, origin, scaling)[...,-1]
+		loss_depth = l1_loss(d_pred[mask_depth], depth_gt[mask_depth],reduction_method,feat_dim=False)*lambda_depth/batch_size
 
 		loss['loss']+=loss_depth
 		loss['loss_depth']+=loss_depth
@@ -108,6 +129,13 @@ def calculate_freespace_loss(lambda_freespace, logits_hat, reduction_method, los
 def freespace_loss(logits_pred, weights=None, reduction_method='sum'):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering		
 	return cross_entropy_occupancy_loss(logits_pred, is_occupied=False, weights=weights,reduction_method=reduction_method)
+
+def calculate_mask_loss(lambda_mask, logits_hat, reduction_method, loss):
+	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering		
+	batch_size=logits_hat.shape[0]
+	loss_mask = freespace_loss(logits_hat, reduction_method=reduction_method)*lambda_mask/batch_size
+	loss['loss']+=loss_mask
+	loss['loss_mask']+=loss_mask
 
 def cross_entropy_occupancy_loss(logits_pred, is_occupied=True, weights=None, reduction_method='None'):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering

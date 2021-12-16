@@ -9,8 +9,10 @@ from matplotlib.patches import Circle
 import time
 from sklearn.neighbors import NearestNeighbors
 from geometry import camera_to_world, world_to_camera
-from view_3D import visualize_3D
+#from view_3D import visualize_3D
 import math
+from sklearn.neighbors import NearestNeighbors
+
 
 
 # **********************************************************************************************
@@ -91,12 +93,27 @@ def sample_n(mask, n_points):
 	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
 
 	#Get a sample of n_points
-	n = np.random.choice(pixel_locations.shape[1],size=n_points,replace=False)
+	n = np.random.choice(pixel_locations.shape[1],size=min(n_points,pixel_locations.shape[1]),replace=False)
 
 	p = pixel_locations[:,n,:]
 
 	return p
 
+def sample_correspondences(iuv_1, iuv_2, n_points):
+	batch_size = iuv_1.shape[0]
+	device = iuv_1.device
+
+	iuv_valid=torch.where(iuv_1[...,0]!=-1)
+
+	u_1=iuv_1[iuv_valid[0], iuv_valid[1],iuv_valid[2],:].repeat(batch_size,1,1) # (b,N,2)
+	u_2=iuv_2[iuv_valid[0], iuv_valid[1],iuv_valid[2],:].repeat(batch_size,1,1) # (b,N,2)
+
+	n = np.random.choice(u_1.shape[1],size=min(n_points,u_1.shape[1]),replace=False)
+
+	u_1 = u_1[:,n,:]
+	u_2 = u_2[:,n,:]
+
+	return u_1, u_2
 
 
 def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.1,5.], depth_img=None, padding=1e-3):
@@ -105,16 +122,16 @@ def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.1,5.], dept
 
 	batch_size,n_points,_ = p.shape
 
+	#n_points=int(n_points/2)
+
 	d_freespace=None
 	if depth_img is not None:
-		d_freespace = get_tensor_values(depth_img,p[:,:int(3*n_points/4),:]) - padding
-		depth_min = float(torch.min(depth_img[depth_img>0]))
-		d_freespace = torch.cat([d_freespace, torch.from_numpy(np.random.choice(np.linspace(0, depth_min-padding, num=int(n_points/10)), size=math.ceil(n_points/4))).view(batch_size,-1,1).to(device)],dim=1)
+		d_freespace = get_tensor_values(depth_img,p[:,:n_points,:]) - padding
 	else:
 		depth_min=depth_range[0]
 
 		#Freespace points are outside of the cube of the object, which is defined by the min and max of the depth or depth range
-		d_freespace = torch.from_numpy(np.random.choice(np.linspace(0, depth_min-padding, num=int(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
+		d_freespace = torch.from_numpy(np.random.choice(np.linspace(0, depth_min, num=math.ceil(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
 
 	p_freespace = camera_to_world(p, d_freespace, K, R, C, origin, scaling)
 
@@ -127,18 +144,42 @@ def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, depth
 
 	d_occupancy=None
 	if depth_img is not None:
-		d_occupancy = get_tensor_values(depth_img,pixels[:,:int(3*n_points/4),:]) + 1e-3
-		depth_max = float(torch.max(depth_img[depth_img>0]))
-		d_occupancy = torch.cat([d_occupancy, torch.from_numpy(np.random.choice(np.linspace(depth_max, depth_max+padding, num=int(n_points/10)), size=math.ceil(n_points/4))).view(batch_size,-1,1).to(device)],dim=1)
+		d_occupancy = get_tensor_values(depth_img,pixels[:,:n_points,:]) + 1e-3
 	else:
 		depth_max=depth_range[1]
 
 		#Freespace points are outside of the cube of the object, which is defined by the min and max of the depth or depth range
-		d_occupancy = torch.from_numpy(np.random.choice(np.linspace(depth_max, depth_max+padding, num=int(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
+		d_occupancy = torch.from_numpy(np.random.choice(np.linspace(depth_max, depth_max+padding, num=math.ceil(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
 
 	p_occupancy = camera_to_world(pixels, d_occupancy, K, R, C, origin, scaling)
 
 	return p_occupancy
+
+def get_mask_points(mask, K, R, C, origin, scaling, n_points,depth_range=[0.1,5.]):
+	device=mask.device
+	batch_size=mask.shape[0]
+
+	d_mask = torch.from_numpy(np.random.choice(np.linspace(depth_range[0], depth_range[1], num=math.ceil(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
+
+	h=mask.shape[2]
+	w=mask.shape[3]
+
+	batch_size = mask.shape[0]
+
+	invalid_points = torch.where(mask[:,0,...]==0)
+
+	pixel_locations = torch.stack([invalid_points[2], invalid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
+
+	#Get a sample of n_points
+	n = np.random.choice(pixel_locations.shape[1],size=min(n_points,pixel_locations.shape[1]),replace=False)
+
+	p = pixel_locations[:,n,:]
+
+	p_mask = camera_to_world(p, d_mask, K, R, C, origin, scaling)
+
+	return p_mask
+
+
 
 def intersect_camera_rays_with_unit_cube(pixels, K, R, C, origin, scaling, padding=0.1, eps=1e-6,use_ray_length_as_depth=True):
 	batch_size, n_points, _ = pixels.shape
@@ -308,3 +349,296 @@ def normalize_imagenet(x):
 	x[:, 1] = (x[:, 1] - 0.456) / 0.224
 	x[:, 2] = (x[:, 2] - 0.406) / 0.225
 	return x
+
+def save_3D(X, mask,fname):
+	x=X[0,...]
+	y=X[1,...]
+	z=X[2,...]
+
+	np.savetxt(fname+'_x.txt',x)
+	np.savetxt(fname+'_y.txt',y)
+	np.savetxt(fname+'_z.txt',z)
+	np.savetxt(fname+'_mask.txt',mask)
+
+
+def get_dp_correspondences(dp1,dp2,mask1,mask2,num_matches=15,threshold=5,visualize=False):
+	"""
+	Gets correspondences between two DensePose images
+	We choose the 15 correspondences with the lowest u,v distance
+	For later computation, missing parts or correspondences are filled with -1s
+
+	Parameters
+	----------
+	dp1 - IUV array 1: ndarray of shape (256,256,3)
+	dp2 - IUV array 2: ndarray of shape (256,256,3)
+
+	Returns
+	-------
+	x1 - Array of correspondences from dp1: ndarray of shape (360,2)
+	x2 - Array of correspondences from dp2: ndarray of shape (360,2)
+	"""
+
+
+	final_corr_1=[]
+	final_corr_2=[]
+
+	if np.max(dp1)<=1.0:
+		mask1=np.where(mask1>0,255.0,0.0)
+		mask2=np.where(mask2>0,255.0,0.0)
+	else:
+		mask1=np.where(mask1>0,1.0,0.0)
+		mask2=np.where(mask2>0,1.0,0.0)
+
+
+	dp1=dp1*mask1
+	dp2=dp2*mask2
+
+	dp1=np.floor(dp1)
+	dp2=np.floor(dp2)
+
+	#Get the coordinates of valid points
+	loc1=np.argwhere(dp1[:,:,2]>0) # N1 x 3
+	loc2=np.argwhere(dp2[:,:,2]>0) # N2 x 3
+
+	#Narrow down descriptors to only get valid descriptors
+	des1=dp1[loc1[:,0], loc1[:,1], :] # N1 x 3
+	des2=dp2[loc2[:,0], loc2[:,1], :] # N2 x 3
+
+	#For each segment we need to find u,v correspondences
+	#There are 25 possible segments
+	if visualize:
+		plt.imshow(dp1[:,:,2]),plt.show()
+		plt.imshow(dp1[:,:,0]), plt.show()
+		plt.imshow(dp1[:,:,1]), plt.show()
+	warning=True
+
+	#Let's check to see if these are viewed from the same side (front vs. back)
+	#Get front:
+	des1_f_ind=np.argwhere(des1[:,2]==2).flatten() # M1
+	loc1_f=loc1[des1_f_ind,:] #M1 x 2
+
+	des2_f_ind=np.argwhere(des2[:,2]==2).flatten() # M2
+	loc2_f=loc2[des2_f_ind,:]
+
+
+	#Get back:
+	des1_b_ind=np.argwhere(des1[:,2]==1).flatten() # M1
+	loc1_b=loc1[des1_b_ind,:] #M1 x 2
+
+	des2_b_ind=np.argwhere(des2[:,2]==1).flatten() # M2
+	loc2_b=loc2[des2_b_ind,:]
+
+	front_dom_1=loc1_f.shape[0] > loc1_b.shape[0]
+	front_dom_2=loc2_f.shape[0] > loc2_b.shape[0]
+
+	if front_dom_1 != front_dom_2 and (np.abs(loc1_f.shape[0]-loc2_f.shape[0])>np.abs(loc1_f.shape[0]-loc1_b.shape[0])) and (np.abs(loc2_f.shape[0]-loc1_f.shape[0])>np.abs(loc2_f.shape[0]-loc2_b.shape[0])):
+		final_corr_1=np.asarray(final_corr_1,dtype=np.int32)
+		final_corr_2=np.asarray(final_corr_2,dtype=np.int32)		
+		print("There have been no matches found between these two images.")
+		return final_corr_1, final_corr_2, warning
+
+	for i in range(1,26):
+		#Filter kps and des by i
+		des1_i_ind=np.argwhere(des1[:,2]==i).flatten() # M1
+		des1_i=des1[des1_i_ind,:] # M1 x 3
+		loc1_i=loc1[des1_i_ind,:] #M1 x 2
+
+		des2_i_ind=np.argwhere(des2[:,2]==i).flatten() # M2
+		des2_i=des2[des2_i_ind,:] # M2 x 2
+		loc2_i=loc2[des2_i_ind,:]
+
+		#If we are missing the body part from one of the frames then we can simply add a block of [-1,-1,-1] and move on
+		if(len(des1_i_ind)==0 or len(des2_i_ind)==0):
+			final_corr_1.extend(np.ones((num_matches,2))*-1)
+			final_corr_2.extend(np.ones((num_matches,2))*-1)
+			continue
+
+		#Remove outliers
+		#IQR Method
+		loc1_q3, loc1_q1 = np.percentile(loc1_i, [75,25],axis=0)
+		iqr=loc1_q3-loc1_q1
+
+		not_too_small=loc1_i > loc1_q1[np.newaxis,:]-1.5*iqr[np.newaxis,:]
+		loc1_i=loc1_i[not_too_small[:,0]*not_too_small[:,1],:]
+		des1_i=des1_i[not_too_small[:,0]*not_too_small[:,1],:]
+
+		not_too_big=loc1_i < loc1_q3+1.5*iqr
+		loc1_i=loc1_i[not_too_big[:,0]*not_too_big[:,1],:]
+		des1_i=des1_i[not_too_big[:,0]*not_too_big[:,1],:]
+
+		loc2_q3, loc2_q1 = np.percentile(loc2_i, [75,25],axis=0)
+		iqr=loc2_q3-loc2_q1
+
+		not_too_small=loc2_i > loc2_q1[np.newaxis,:]-1.5*iqr[np.newaxis,:]
+		loc2_i=loc2_i[not_too_small[:,0]*not_too_small[:,1],:]
+		des2_i=des2_i[not_too_small[:,0]*not_too_small[:,1],:]
+
+		not_too_big=loc2_i < loc2_q3[np.newaxis,:]+1.5*iqr[np.newaxis,:]
+		loc2_i=loc2_i[not_too_big[:,0]*not_too_big[:,1],:]
+		des2_i=des2_i[not_too_big[:,0]*not_too_big[:,1],:]
+
+		#Let's check to make sure we have more than 0 samples
+		if loc1_i.shape[0]<1 or loc2_i.shape[0]<1:			
+			final_corr_1.extend(np.ones((num_matches,2))*-1)
+			final_corr_2.extend(np.ones((num_matches,2))*-1)
+			continue
+
+		#Std Dev Method
+		loc1_mean=np.mean(loc1_i,axis=0)
+		loc1_stddev=np.std(loc1_i,axis=0)
+		loc1_dist_from_mean = abs(loc1_i-loc1_mean[np.newaxis,:])
+		max_dev=2
+		loc1_not_outlier = loc1_dist_from_mean < max_dev*loc1_stddev[np.newaxis,:]
+		loc1_i=loc1_i[loc1_not_outlier[:,0]*loc1_not_outlier[:,1],:]
+		des1_i=des1_i[loc1_not_outlier[:,0]*loc1_not_outlier[:,1],:]
+
+		loc2_mean=np.mean(loc2_i)
+		loc2_stddev=np.std(loc2_i)
+		loc2_dist_from_mean = abs(loc2_i-loc2_mean)
+		max_dev=2
+		loc2_not_outlier = loc2_dist_from_mean < max_dev*loc2_stddev
+		loc2_i=loc2_i[loc2_not_outlier[:,0],:]
+		des2_i=des2_i[loc2_not_outlier[:,0],:]
+
+
+		#Let's check to make sure we have more than 0 samples
+		if loc1_i.shape[0]<1 or loc2_i.shape[0]<1:
+			final_corr_1.extend(np.ones((num_matches,2))*-1)
+			final_corr_2.extend(np.ones((num_matches,2))*-1)
+			continue
+
+		des1_uv=des1_i
+		des2_uv=des2_i
+		matches=[]
+
+		nbrs=NearestNeighbors(n_neighbors=1).fit(des2_uv)
+		distances, indices=nbrs.kneighbors(des1_uv)
+
+		for j in range(indices.shape[0]):
+			if distances[j]<threshold:
+				matches.append([distances[j][0],j,indices[j][0]])
+
+		matches=np.asarray(matches)
+		if len(matches)==0:
+			final_corr_1.extend(np.ones((num_matches,2))*-1)
+			final_corr_2.extend(np.ones((num_matches,2))*-1)
+			continue
+		else:
+			ind=np.argsort(matches[:,0])
+			matches=matches[ind]
+			warning=False
+
+		to_add=np.asarray(matches[:num_matches],dtype=np.int32)
+		corr_1_to_add=loc1_i[to_add[:,1],:]
+		corr_2_to_add=loc2_i[to_add[:,2],:]
+
+		#Technically loc_1 is in v,u order, and so we need to flip that
+		final_corr_1.extend(np.concatenate((np.reshape(corr_1_to_add[:,1],(-1,1)),np.reshape(corr_1_to_add[:,0], (-1,1))),axis=1))
+		final_corr_2.extend(np.concatenate((np.reshape(corr_2_to_add[:,1],(-1,1)),np.reshape(corr_2_to_add[:,0], (-1,1))),axis=1))
+
+		if len(to_add)<num_matches:
+			final_corr_1.extend(np.ones((num_matches-len(to_add),2))*-1)
+			final_corr_2.extend(np.ones((num_matches-len(to_add),2))*-1)
+
+
+		if visualize:
+			corr_1_to_add=np.asarray(np.concatenate((np.reshape(corr_1_to_add[:,1],(-1,1)),np.reshape(corr_1_to_add[:,0], (-1,1))),axis=1))
+			corr_2_to_add=np.asarray(np.concatenate((np.reshape(corr_2_to_add[:,1],(-1,1)),np.reshape(corr_2_to_add[:,0], (-1,1))),axis=1))
+			visualize_correspondences(corr_1_to_add[np.newaxis,...],corr_2_to_add[np.newaxis,...],dp/255.0,dp/255.0)
+
+	final_corr_1=np.asarray(final_corr_1,dtype=np.int32)
+	final_corr_2=np.asarray(final_corr_2,dtype=np.int32)
+
+
+	if (warning):
+		print("There have been no matches found between these two images.")
+
+
+	return final_corr_1, final_corr_2,warning
+
+
+def visualize_correspondences(iuv_1, iuv_2,dp_1,dp_2,show=True, save=False, fname='corr.png'):
+	"""
+		Visualize the iuv correspondences
+
+		Parameters
+		---------
+		iuv1, iuv2 - iuv correspondences: ndarray of shape (1,360,2)
+		dp1, dp2 - DensePose images: ndarray of shape (H,W,3)
+
+	"""
+
+	#Get only valid iuv parameters
+	iuv_valid=np.where(iuv_1!=-1)
+	iuv_1=iuv_1[iuv_valid[0],iuv_valid[1],:] # N,2
+	iuv_2=iuv_2[iuv_valid[0],iuv_valid[1],:] # N,2
+
+	canvas=np.zeros((dp_1.shape[0],dp_1.shape[1]*2,3))
+	canvas[:,0:dp_1.shape[1],:]=dp_1
+	canvas[:,dp_1.shape[1]:,:]=dp_2
+
+	for i in range(len(iuv_1)):
+		plt.plot([iuv_1[i,0],iuv_2[i,0]+dp_1.shape[1]],[iuv_1[i,1],iuv_2[i,1]])
+
+
+	if show:
+		plt.imshow(canvas),plt.show()
+
+	else:
+		plt.imsave(fname,canvas)
+
+
+def transform_densepose(p_pred_1,p_pred_2, iuv_1, iuv_2):
+	iuv_1*=255.
+	iuv_2*=255.
+
+	segments = torch.unique(iuv_1[...,2])
+
+	PC2p = None
+	PC1_2 = None
+
+	for s in segments:
+		valid = iuv_1[...,2]==s
+
+		if PC1_2 is None and PC2p is None:
+			PC2p, PC1_2 = part_transformation(p_pred_1[valid], p_pred_2[valid])
+		else:
+			p2p, p1_2 = part_transformation(p_pred_1[valid], p_pred_2[valid])
+
+			PC2p = torch.cat([PC2p, p2p],dim=0)
+			PC1_2 = torch.cat([PC1_2, p1_2],dim=0)
+
+	return PC2p.T, PC1_2.T
+
+def part_transformation(p_1, p_2):
+	p2p = p_2
+	p1_2 = get_transformation(p_1, p_2)
+	return p2p, p1_2
+
+def rigid_transform(p_1, p_2):
+	centroid_1 = torch.mean(p_1,dim=0,keepdim=True)
+	centroid_2 = torch.mean(p_2,dim=0,keepdim=True)
+
+	p_1_m = p_1 - centroid_1.repeat(p_1.shape[0],1)
+	p_2_m = p_2 - centroid_2.repeat(p_2.shape[0],1)
+
+	H = p_1_m.T@p_2_m
+
+	u,s,vh = torch.svd(H)
+	v = vh.transpose(-2,-1).conj()
+	R=v@u.T
+	t = -R@centroid_1.T + centroid_2.T
+
+	return R,t
+
+def get_transformation(p_1,p_2):
+	R,t = rigid_transform(p_1,p_2)
+
+	p1_2 = R@p_2.T + t
+
+	return p1_2.T
+
+
+
+
+

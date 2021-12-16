@@ -23,9 +23,10 @@ def world_to_camera(p_world,K,R,C,origin,scaling):
 
 	u=K.squeeze(1)@P.squeeze(1)@p_world # (B,3,n_points)
 	u=(1/scaling.squeeze(1))*u
-	u[...,:2]-=((1/scaling.squeeze(1))*origin.squeeze(1))
+	u=u.permute(0,2,1)
+	u[...,:2] = u[...,:2] - ((1/scaling.squeeze(1))*origin.squeeze(1))
 
-	return u.permute(0,2,1)
+	return u
 
 
 def depth_to_3D(depth, K, R, C, scale_factor,origin,scale_est=1):
