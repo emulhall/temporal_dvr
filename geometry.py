@@ -2,9 +2,11 @@ import torch
 import numpy as np
 def camera_to_world(p, d, K, R, C, origin, scaling):
 
+	device=p.device
+
 	#Make homogenous
 	u=scaling.squeeze(1)*p+origin.squeeze(1)
-	u=torch.cat((u, torch.ones((p.shape[0],p.shape[1],1)).cuda(non_blocking=True)),dim=-1)
+	u=torch.cat((u, torch.ones((p.shape[0],p.shape[1],1)).to(device)),dim=-1)
 
 	#Convert to world coordinate system
 	X=torch.transpose(R.squeeze(1), 1,2)@torch.inverse(K.squeeze(1))@torch.transpose(u, 1,2) # (1, 3, n_points)
@@ -22,8 +24,15 @@ def world_to_camera(p_world,K,R,C,origin,scaling):
 	P=R@torch.cat((torch.eye(3).repeat(batch_size,1,1,1).to(device),-C),axis=3)
 
 	u=K.squeeze(1)@P.squeeze(1)@p_world # (B,3,n_points)
+	#Normalize
+	z = u[:, 2:3, :]
+	sign = torch.where(torch.sign(z)==0, torch.ones_like(z),torch.sign(z))
+	z = torch.where(torch.abs(z)>1e-5,z,sign*1e-5)
+	u[:,:2,:] = u[:,:2,:] / z
+	#Adjust for scaling
 	u=(1/scaling.squeeze(1))*u
 	u=u.permute(0,2,1)
+	#Adjust for resizing
 	u[...,:2] = u[...,:2] - ((1/scaling.squeeze(1))*origin.squeeze(1))
 
 	return u

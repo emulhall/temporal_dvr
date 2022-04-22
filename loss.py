@@ -1,6 +1,6 @@
 import torch
 from torch.nn import functional as F
-from utils import get_tensor_values, transform_densepose
+from utils import get_tensor_values
 from geometry import camera_to_world, world_to_camera
 
 def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, reduction_method, loss):
@@ -9,6 +9,12 @@ def calculate_photoconsistency_loss(lambda_rgb, mask_rgb, rgb_pred, img,pixels, 
 		batch_size,n_points,_=rgb_pred.shape
 		loss_rgb_eval = torch.tensor(3)
 		rgb_gt = get_tensor_values(img,pixels)
+
+		'''print("Printing the original values for comparison")
+		print(torch.unique(rgb_pred[mask_rgb]))
+		print((rgb_gt[mask_rgb]).max())
+		print((rgb_gt[mask_rgb]).min())
+		print("\n")'''
 
 		#RGB loss
 		loss_rgb = l1_loss(rgb_pred[mask_rgb],rgb_gt[mask_rgb],reduction_method)*lambda_rgb/batch_size
@@ -29,16 +35,31 @@ def calculate_temporal_photoconsistency_loss(lambda_temporal_rgb, mask_rgb_1, ma
 		loss['loss']+=loss_rgb
 		loss['loss_temporal_rgb']+=loss_rgb
 
-def calculate_temporal_loss(lambda_temporal, iuv_1, iuv_2,mask_1, mask_2, p_pred_1, p_pred_2,reduction_method, loss):
-	mask_temp= mask_1 & mask_2
-	if lambda_temporal!=0 and mask_temp.sum() >0:
+def calculate_multi_rgb_loss(lambda_multi_rgb, mask_rgb_1, mask_rgb_2, rgb_pred_1, rgb_pred_2,reduction_method, loss):
+	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
+	mask_rgb = mask_rgb_1 & mask_rgb_2
+	
+	if lambda_multi_rgb!=0 and mask_rgb.sum() >0 :
+		batch_size,n_points,_=rgb_pred_1.shape
 
-		PC2p, PC1_2 = transform_densepose(p_pred_1,p_pred_2, iuv_1, iuv_2)
+		#RGB loss
+		loss_rgb = l1_loss(rgb_pred_1[mask_rgb],rgb_pred_2[mask_rgb],reduction_method)*lambda_multi_rgb/batch_size
 
-		loss_temporal = l1_loss(PC2p[mask_temp.repeat(3,1)],PC1_2[mask_temp.repeat(3,1)])
+		loss['loss']+=loss_rgb
+		loss['loss_multi_rgb']+=loss_rgb
 
-		loss['loss']+=loss_temporal
-		loss['loss_temporal']+=loss_temporal
+def calculate_multi_depth_loss(lambda_multi_depth, mask_depth_1, mask_depth_2, world_pred_1, world_pred_2,reduction_method, loss):
+	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
+	mask_depth = mask_depth_1 & mask_depth_2
+	
+	if lambda_multi_depth!=0 and mask_depth.sum() >0 :
+		batch_size,n_points,_=world_pred_1.shape
+
+		#RGB loss
+		loss_depth = l1_loss(world_pred_1[mask_depth],world_pred_2[mask_depth],reduction_method)*lambda_multi_depth/batch_size
+
+		loss['loss']+=loss_depth
+		loss['loss_multi_depth']+=loss_depth		
 
 
 def l1_loss(val_gt, val_pred, reduction_method='sum',eps=0.,sigma_pow=1,feat_dim=True):
@@ -90,16 +111,15 @@ def image_gradient_loss(val_pred, val_gt, mask, patch_size, reduction_method='su
 	return apply_reduction(loss_out, reduction_method)
 
 
-def calculate_depth_loss(lambda_depth,mask_depth, depth_img, pixels, K, R, C, origin, scaling, p_world_hat, reduction_method, loss, depth_loss_on_world_points=False):
+def calculate_depth_loss(lambda_depth,mask_depth, depth_img, pixels, d_pred, reduction_method, loss, depth_loss_on_world_points=False):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	if lambda_depth!=0 and mask_depth.sum()>0:
-		batch_size,n_points,_=p_world_hat.shape
+		batch_size,n_points,_=pixels.shape
 
 		#Check if all values are valid
 		depth_gt, mask_gt_depth = get_tensor_values(depth_img,pixels,squeeze_channel_dim=True, with_mask=True)
 		mask_depth &=mask_gt_depth
-		
-		d_pred = world_to_camera(p_world_hat, K, R, C, origin, scaling)[...,-1]
+
 		loss_depth = l1_loss(d_pred[mask_depth], depth_gt[mask_depth],reduction_method,feat_dim=False)*lambda_depth/batch_size
 
 		loss['loss']+=loss_depth

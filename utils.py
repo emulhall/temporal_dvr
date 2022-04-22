@@ -12,6 +12,9 @@ from geometry import camera_to_world, world_to_camera
 #from view_3D import visualize_3D
 import math
 from sklearn.neighbors import NearestNeighbors
+from scipy.spatial import Delaunay
+from tqdm import tqdm
+from torch import distributions as dist
 
 
 
@@ -70,7 +73,7 @@ def sample(mask):
 
 	valid_points = torch.where(mask[:,0,...]>0)
 
-	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
+	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().unsqueeze(0).repeat(batch_size, 1, 1)
 
 	#Get a sample of n_points
 	n = np.random.choice(pixel_locations.shape[1],size=pixel_locations.shape[1],replace=False)
@@ -90,7 +93,7 @@ def sample_n(mask, n_points):
 
 	valid_points = torch.where(mask[:,0,...]>0)
 
-	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
+	pixel_locations = torch.stack([valid_points[2], valid_points[1]],dim=-1).long().unsqueeze(0).repeat(batch_size, 1, 1)
 
 	#Get a sample of n_points
 	n = np.random.choice(pixel_locations.shape[1],size=min(n_points,pixel_locations.shape[1]),replace=False)
@@ -116,50 +119,57 @@ def sample_correspondences(iuv_1, iuv_2, n_points):
 	return u_1, u_2
 
 
-def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[0.1,5.], depth_img=None, padding=1e-3):
+def get_freespace_points(p, K, R, C, origin, scaling, depth_range=[2.5,6.75], depth_img=None, scale=1):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	device=p.device
 
 	batch_size,n_points,_ = p.shape
+	padding = 1e-3
 
 	#n_points=int(n_points/2)
 
 	d_freespace=None
 	if depth_img is not None:
-		d_freespace = get_tensor_values(depth_img,p[:,:n_points,:]) - padding
+		d_freespace =get_tensor_values(depth_img,p[:,:n_points,:])
+		d_freespace -= torch.from_numpy(np.abs(np.random.normal(scale=scale, size=d_freespace.shape))).to(device)
 	else:
 		depth_min=depth_range[0]
 
 		#Freespace points are outside of the cube of the object, which is defined by the min and max of the depth or depth range
-		d_freespace = torch.from_numpy(np.random.choice(np.linspace(0, depth_min, num=math.ceil(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
+		d_freespace = torch.from_numpy(np.random.choice(np.linspace(depth_min, max(depth_min-padding,0), num=math.ceil(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
 
 	p_freespace = camera_to_world(p, d_freespace, K, R, C, origin, scaling)
 
+
 	return p_freespace
 
-def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, depth_range=[0.1,5.], padding=1.):
+def get_occupancy_points(pixels, K, R, C, origin, scaling, depth_img=None, depth_range=[2.5,6.75], scale=1):
 	#modified from from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	device = pixels.device
 	batch_size,n_points,_=pixels.shape
+	padding = 1e-3
 
 	d_occupancy=None
 	if depth_img is not None:
-		d_occupancy = get_tensor_values(depth_img,pixels[:,:n_points,:]) + 1e-3
+		d_occupancy = get_tensor_values(depth_img,pixels[:,:n_points,:])
+		d_occupancy += torch.from_numpy(np.abs(np.random.normal(scale=scale, size=d_occupancy.shape))).to(device)
 	else:
 		depth_max=depth_range[1]
 
-		#Freespace points are outside of the cube of the object, which is defined by the min and max of the depth or depth range
+		#Occupancy points are inside of the cube of the object, which is defined by the min and max of the depth or depth range
 		d_occupancy = torch.from_numpy(np.random.choice(np.linspace(depth_max, depth_max+padding, num=math.ceil(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
 
-	p_occupancy = camera_to_world(pixels, d_occupancy, K, R, C, origin, scaling)
+	p_occupancy = camera_to_world(pixels, d_occupancy, K, R, C, origin, scaling) 
 
 	return p_occupancy
 
-def get_mask_points(mask, K, R, C, origin, scaling, n_points,depth_range=[0.1,5.]):
+def get_mask_points(mask, K, R, C, origin, scaling, n_points,bb_min,bb_max,depth_range=[2.5,6.75]):
 	device=mask.device
 	batch_size=mask.shape[0]
 
-	d_mask = torch.from_numpy(np.random.choice(np.linspace(depth_range[0], depth_range[1], num=math.ceil(n_points/10)), size=n_points)).view(batch_size,-1,1).to(device)
+	mult=20
+
+	d_mask = torch.from_numpy(np.random.choice(np.linspace(depth_range[0], depth_range[1], num=math.ceil(n_points/2)), size=n_points*mult)).view(batch_size,-1,1).to(device)
 
 	h=mask.shape[2]
 	w=mask.shape[3]
@@ -171,11 +181,26 @@ def get_mask_points(mask, K, R, C, origin, scaling, n_points,depth_range=[0.1,5.
 	pixel_locations = torch.stack([invalid_points[2], invalid_points[1]],dim=-1).long().view(1, -1, 2).repeat(batch_size, 1, 1)
 
 	#Get a sample of n_points
-	n = np.random.choice(pixel_locations.shape[1],size=min(n_points,pixel_locations.shape[1]),replace=False)
+	n = np.random.choice(pixel_locations.shape[1],size=n_points*mult)
 
 	p = pixel_locations[:,n,:]
 
 	p_mask = camera_to_world(p, d_mask, K, R, C, origin, scaling)
+
+	X=bb_max[0]
+	Y=bb_max[1]
+	Z=bb_max[0]
+	x=bb_min[0]
+	y=bb_min[1]
+	z=bb_min[2]
+
+	points = np.asarray([[x,y,z],[X,y,z],[x,Y,z],[X,Y,z],[x,y,Z],
+		[X,y,Z],[x,Y,Z],[X,Y,Z]])
+
+	inside=np.argwhere(Delaunay(points).find_simplex(p_mask.cpu())>=0)
+
+	p_mask = p_mask[:,inside[:,1],:]
+	p_mask = p_mask[:,:n_points,:]
 
 	return p_mask
 
@@ -217,6 +242,16 @@ def get_logits_from_prob(probs, eps=1e-4):
 	probs = np.clip(probs, a_min=eps, a_max=1-eps)
 	logits = np.log(probs/ (1-probs))
 	return logits
+
+
+def reshape_multiview_tensors(tensor):
+	tensor = tensor.view(
+		tensor.shape[0]*tensor.shape[1],
+		tensor.shape[2],
+		tensor.shape[3],
+		tensor.shape[4])
+
+	return tensor
 
 
 def get_proposal_points_in_unit_cube(origin, ray_direction, padding=0.1, eps=1e-6, n_steps=40):
@@ -318,11 +353,16 @@ def get_tensor_values(tensor,p,with_mask=False, squeeze_channel_dim=False):
 	#modified from https://github.com/autonomousvision/differentiable_volumetric_rendering
 	p=to_pytorch(p)
 	tensor, is_numpy = to_pytorch(tensor,True)
-	batch_size,_,_,_=tensor.shape
+	batch_size,_,h,w=tensor.shape
+	values = torch.zeros_like(p)
 
 	p=p.long()
-	values=tensor[torch.arange(batch_size).unsqueeze(-1),:,p[...,1],p[...,0]]
+	in_tensor = (p[...,0]>=0) & (p[...,0]<w) & (p[...,1]>=0) & (p[...,1]<h)
+	#print(torch.unique(in_tensor))
+	p=in_tensor[...,np.newaxis]*p
 
+	values=tensor[torch.arange(batch_size).unsqueeze(-1),:,p[...,1],p[...,0]]
+	values=in_tensor[...,np.newaxis]*values
 	if with_mask:
 		mask = get_mask(values)
 		if squeeze_channel_dim:
@@ -414,7 +454,7 @@ def get_dp_correspondences(dp1,dp2,mask1,mask2,num_matches=15,threshold=5,visual
 
 	#Let's check to see if these are viewed from the same side (front vs. back)
 	#Get front:
-	des1_f_ind=np.argwhere(des1[:,2]==2).flatten() # M1
+	'''des1_f_ind=np.argwhere(des1[:,2]==2).flatten() # M1
 	loc1_f=loc1[des1_f_ind,:] #M1 x 2
 
 	des2_f_ind=np.argwhere(des2[:,2]==2).flatten() # M2
@@ -435,7 +475,7 @@ def get_dp_correspondences(dp1,dp2,mask1,mask2,num_matches=15,threshold=5,visual
 		final_corr_1=np.asarray(final_corr_1,dtype=np.int32)
 		final_corr_2=np.asarray(final_corr_2,dtype=np.int32)		
 		print("There have been no matches found between these two images.")
-		return final_corr_1, final_corr_2, warning
+		return final_corr_1, final_corr_2, warning'''
 
 	for i in range(1,26):
 		#Filter kps and des by i
@@ -544,7 +584,7 @@ def get_dp_correspondences(dp1,dp2,mask1,mask2,num_matches=15,threshold=5,visual
 		if visualize:
 			corr_1_to_add=np.asarray(np.concatenate((np.reshape(corr_1_to_add[:,1],(-1,1)),np.reshape(corr_1_to_add[:,0], (-1,1))),axis=1))
 			corr_2_to_add=np.asarray(np.concatenate((np.reshape(corr_2_to_add[:,1],(-1,1)),np.reshape(corr_2_to_add[:,0], (-1,1))),axis=1))
-			visualize_correspondences(corr_1_to_add[np.newaxis,...],corr_2_to_add[np.newaxis,...],dp/255.0,dp/255.0)
+			visualize_correspondences(corr_1_to_add[np.newaxis,...],corr_2_to_add[np.newaxis,...],dp1/255.0,dp2/255.0)
 
 	final_corr_1=np.asarray(final_corr_1,dtype=np.int32)
 	final_corr_2=np.asarray(final_corr_2,dtype=np.int32)
@@ -587,57 +627,63 @@ def visualize_correspondences(iuv_1, iuv_2,dp_1,dp_2,show=True, save=False, fnam
 	else:
 		plt.imsave(fname,canvas)
 
+def compute_acc(pred, gt, thresh=0.5):
+    '''
+    return:
+        IOU, precision, and recall
+    '''
+    with torch.no_grad():
+        vol_pred = pred > thresh
+        vol_gt = gt > thresh
 
-def transform_densepose(p_pred_1,p_pred_2, iuv_1, iuv_2):
-	iuv_1*=255.
-	iuv_2*=255.
+        union = vol_pred | vol_gt
+        inter = vol_pred & vol_gt
 
-	segments = torch.unique(iuv_1[...,2])
+        true_pos = inter.sum().float()
 
-	PC2p = None
-	PC1_2 = None
+        union = union.sum().float()
+        if union == 0:
+            union = 1
+        vol_pred = vol_pred.sum().float()
+        if vol_pred == 0:
+            vol_pred = 1
+        vol_gt = vol_gt.sum().float()
+        if vol_gt == 0:
+            vol_gt = 1
+        return true_pos / union, true_pos / vol_pred, true_pos / vol_gt
 
-	for s in segments:
-		valid = iuv_1[...,2]==s
+def calc_error(model, device, dataset, num_tests):
+	if num_tests>len(dataset):
+		num_tests=len(dataset)
 
-		if PC1_2 is None and PC2p is None:
-			PC2p, PC1_2 = part_transformation(p_pred_1[valid], p_pred_2[valid])
-		else:
-			p2p, p1_2 = part_transformation(p_pred_1[valid], p_pred_2[valid])
+	with torch.no_grad():
+		IOU_arr, prec_arr, recall_arr = [], [], []
 
-			PC2p = torch.cat([PC2p, p2p],dim=0)
-			PC1_2 = torch.cat([PC1_2, p1_2],dim=0)
+		for idx in tqdm(range(num_tests)):
+			data = dataset[idx * len(dataset) // num_tests]
 
-	return PC2p.T, PC1_2.T
+			#Retrieve data
+			color = data['color'].to(device)
+			mask = data['mask'].to(device)
+			K = data['K'].to(device) 
+			R = data['R'].to(device) 
+			C = data['C'].to(device)
+			origin = data['origin'].to(device)
+			scaling = data['scaling'].to(device)
+			samples = data['samples'].to(device).squeeze(1)
+			labels = data['labels'].to(device).squeeze(1)
 
-def part_transformation(p_1, p_2):
-	p2p = p_2
-	p1_2 = get_transformation(p_1, p_2)
-	return p2p, p1_2
+			c = model.encode_inputs(color)
 
-def rigid_transform(p_1, p_2):
-	centroid_1 = torch.mean(p_1,dim=0,keepdim=True)
-	centroid_2 = torch.mean(p_2,dim=0,keepdim=True)
+			pred = model.decode(samples.float(),c=c).probs
+			#pred = dist.Bernoulli(logits=torch.tensor(logits)).probs
 
-	p_1_m = p_1 - centroid_1.repeat(p_1.shape[0],1)
-	p_2_m = p_2 - centroid_2.repeat(p_2.shape[0],1)
+			IOU, prec, recall = compute_acc(pred, labels.squeeze(2))
+			IOU_arr.append(IOU.item())
+			prec_arr.append(prec.item())
+			recall_arr.append(recall.item())
 
-	H = p_1_m.T@p_2_m
-
-	u,s,vh = torch.svd(H)
-	v = vh.transpose(-2,-1).conj()
-	R=v@u.T
-	t = -R@centroid_1.T + centroid_2.T
-
-	return R,t
-
-def get_transformation(p_1,p_2):
-	R,t = rigid_transform(p_1,p_2)
-
-	p1_2 = R@p_2.T + t
-
-	return p1_2.T
-
+	return (np.average(IOU_arr), np.average(prec_arr), np.average(recall_arr))
 
 
 

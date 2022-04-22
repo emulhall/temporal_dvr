@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 from torch import distributions as dist
+import numpy as np
 
 from models import depth_function, decoder
 from utils import points_to_world, normalize_tensor, get_mask
@@ -22,12 +23,12 @@ class DVR(nn.Module):
 		self.call_depth_function = depth_function.DepthModule(**depth_function_kwargs)
 
 
-	def forward(self, p, p_occupancy, p_freespace, p_mask,inputs, K, R, C, origin, scale, p_temporal_1=None, p_temporal_2=None, origin_2=None, scale_2=None, inputs_2=None, it=None,calc_normals=True, depth_range=[0.1,5.],**kwargs):
+	def forward(self, p, p_occupancy, p_freespace, p_mask,inputs, K, R, C, origin, scale, p_corr_1=None, p_corr_2=None, it=None, depth_range=[2.5,6.75],**kwargs):
 
 		#Encode inputs
 		c=self.encode_inputs(inputs) #(1,c_dim)
 
-		p_world, mask_pred, mask_zero_occupied = self.pixels_to_world(p, K, R, C, origin, scale, c,it, depth_range=depth_range)
+		p_world, mask_pred, mask_zero_occupied, d_hat = self.pixels_to_world(p, K, R, C, origin, scale, c,it, depth_range=depth_range)
 
 		rgb_pred = self.decode_color(p_world, c=c)
 
@@ -41,24 +42,37 @@ class DVR(nn.Module):
 
 		logits_mask = self.decode(p_mask,c=c).logits
 
-		if calc_normals:
-			normals = self.get_normals(p_world.detach(), mask_pred, c=c)
-		else:
-			normals = None
+		p_world_1 = None
+		p_world_2 = None
+		
+		if p_corr_1 is not None and p_corr_2 is not None:
+			p_world_1 = torch.zeros((p_corr_1.shape[0],p_corr_1.shape[1],3))
+			p_world_2 = torch.zeros((p_corr_2.shape[0],p_corr_2.shape[1],3))
 
-		if p_temporal_1 is not None and p_temporal_2 is not None and origin_2 is not None and scale_2 is not None and inputs_2 is not None:
-			c_2 = self.encode_inputs(inputs_2)
+			rgb_pred_1 = torch.zeros((p_corr_1.shape[0],p_corr_1.shape[1],3))
+			rgb_pred_2 = torch.zeros((p_corr_2.shape[0],p_corr_2.shape[1],3))
 
-			p_world_1, mask_pred_1, mask_zero_occupied_1 = self.pixels_to_world(p_temporal_1, K, R, C, origin, scale, c,it, depth_range=depth_range)
-			p_world_2, mask_pred_2, mask_zero_occupied_2 = self.pixels_to_world(p_temporal_2, K, R, C, origin_2, scale_2, c_2,it, depth_range=depth_range)
+			mask_pred_1 = torch.zeros((p_corr_1.shape[0],p_corr_1.shape[1]))
+			mask_pred_2 = torch.zeros((p_corr_2.shape[0],p_corr_2.shape[1]))			
 
-			rgb_pred_1 = self.decode_color(p_world_1,c=c)
-			rgb_pred_2 = self.decode_color(p_world_2,c=c_2)
+			for b in range(p_corr_1.shape[0]):
+				p_world_1_temp, mask_pred_1_temp, mask_zero_occupied_1_temp, d_hat_1_temp = self.pixels_to_world(p_corr_1[b:b+1,...], K[b:b+1], R[b:b+1], C[b:b+1], origin[b:b+1], scale[b:b+1], c[b:b+1],it, depth_range=depth_range)
+				p_world_2_temp, mask_pred_2_temp, mask_zero_occupied_2_temp, d_hat_2_temp = self.pixels_to_world(p_corr_2[b:b+1,...], K[b+1:b+2], R[b+1:b+2], C[b+1:b+2], origin[b+1:b+2], scale[b+1:b+2], c[b+1:b+2],it, depth_range=depth_range)
+
+				p_world_1[b] = p_world_1_temp
+				p_world_2[b] = p_world_2_temp
+
+				mask_pred_1[b] = mask_pred_1_temp
+				mask_pred_2[b] = mask_pred_2_temp				
+
+				rgb_pred_1[b] = self.decode_color(p_world_1_temp,c=c[b:b+1])
+				rgb_pred_2[b] = self.decode_color(p_world_2_temp,c=c[b+1:b+2])			
+
 		else:
 			p_world_1, mask_pred_1, p_world_2, mask_pred_2,  rgb_pred_1, rgb_pred_2 = None, None, None, None, None, None
 
 
-		return (p_world, rgb_pred, logits_occupancy, logits_freespace, logits_mask,mask_pred, normals,p_world_1,mask_pred_1, p_world_2, mask_pred_2, rgb_pred_1, rgb_pred_2)
+		return (p_world, rgb_pred, logits_occupancy, logits_freespace, logits_mask,mask_pred,d_hat, p_world_1, rgb_pred_1, mask_pred_1, p_world_2, rgb_pred_2, mask_pred_2)
 
 	def get_normals(self, points, mask, c=None, h_sample=1e-3, h_finite_difference=1e-3):
 
@@ -66,6 +80,9 @@ class DVR(nn.Module):
 			c = c.unsqueeze(1).repeat(1,points.shape[1],1)[mask]
 			points = points[mask]
 			points_neighbor = points + (torch.rand_like(points)*h_sample - (h_sample /2.))
+
+			#print(points.shape)
+			#print(points_neighbor.shape)
 
 			normals_p = normalize_tensor(self.get_central_difference(points, c=c, h=h_finite_difference))
 			normals_neighbor = normalize_tensor(self.get_central_difference(points_neighbor, c=c, h=h_finite_difference))
@@ -119,7 +136,7 @@ class DVR(nn.Module):
 		return rgb_hat
 
 
-	def pixels_to_world(self,p, K, R, C, origin, scale, c,it=None, sampling_accuracy=None, depth_range=[0.1,5.]):
+	def pixels_to_world(self,p, K, R, C, origin, scale, c,it=None, sampling_accuracy=None, depth_range=[2.5,6.75]):
 		p_world = points_to_world(p, K, R, C, origin, scale) # B,n_points,3
 
 		c_world = C.squeeze(1).permute(0,2,1).repeat(1,p.shape[1],1)
@@ -130,10 +147,10 @@ class DVR(nn.Module):
 
 		p_world_hat = c_world + ray*d_hat.unsqueeze(-1)
 
-		return p_world_hat, mask_pred, mask_zero_occupied
+		return p_world_hat, mask_pred, mask_zero_occupied, d_hat
 
 
-	def march_along_ray(self,origin, ray_direction, c=None, it=None, sampling_accuracy=None, depth_range=[0.1,5.]):
+	def march_along_ray(self,origin, ray_direction, c=None, it=None, sampling_accuracy=None, depth_range=[2.5,6.75]):
 		d_i = self.call_depth_function(origin, ray_direction, self.decoder, c=c, it=it, n_steps=sampling_accuracy,depth_range=depth_range)
 
 		#Get mask for where first evaluation point is occupied

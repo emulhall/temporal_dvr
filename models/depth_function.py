@@ -9,7 +9,7 @@ from utils import get_logits_from_prob, get_proposal_points_in_unit_cube
 
 class DepthModule(nn.Module):
 
-	def __init__(self, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[0.,4.],
+	def __init__(self, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[2.5,6.75],
 		method='secant',max_points=3700000, schedule_ray_sampling=True,
 		schedule_milestones=[50000,100000,25000], check_cube_intersection=False,init_resolution=16):
 		super().__init__()
@@ -37,7 +37,7 @@ class DepthModule(nn.Module):
 				res = res*2
 			return [res, res+1]
 
-	def forward(self, origin, ray_direction, decoder, c=None, it=None, n_steps=None, depth_range=[0.,4.]):
+	def forward(self, origin, ray_direction, decoder, c=None, it=None, n_steps=None, depth_range=[2.5,6.75]):
 		if n_steps is None:
 			if self.schedule_ray_sampling and it is not None:
 				n_steps = self.get_sampling_accuracy(it)
@@ -79,7 +79,7 @@ class DepthFunction(torch.autograd.Function):
 
 
 	@staticmethod
-	def perform_ray_marching(origin, ray_direction, decoder, c=None, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[0.,4.], method='secant', max_points=3500000):
+	def perform_ray_marching(origin, ray_direction, decoder, c=None, tau=0.5, n_steps=[255,256], n_secant_steps=8, depth_range=[2.5,6.75], method='secant', max_points=3500000):
 		batch_size, n_points, D = origin.shape
 		device=origin.device
 		logit_tau = get_logits_from_prob(tau)
@@ -150,7 +150,7 @@ class DepthFunction(torch.autograd.Function):
 			d_pred, p_pred, mask, mask_0_not_occupied = DepthFunction.perform_ray_marching(origin, ray_direction, decoder, c, tau, n_steps, 
 																							n_secant_steps, depth_range, method, max_points)
 
-		d_pred[mask==0] = np.inf
+		d_pred[mask==0] = depth_range[1]
 		d_pred[mask_0_not_occupied==0] = 0
 
 		ctx.save_for_backward(origin, ray_direction, d_pred, p_pred,c)
